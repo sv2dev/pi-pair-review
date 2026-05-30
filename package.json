@@ -1,0 +1,53 @@
+{
+  "name": "pi-pair-review",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "code-review"
+  ],
+  "files": [
+    "build",
+    "src",
+    "README.md",
+    "svelte.config.js",
+    "vite.config.ts",
+    "tsconfig.extension.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build && tsc -p tsconfig.extension.json",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "typecheck:extension": "tsc -p tsconfig.extension.json --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./src/extension/index.ts"
+    ]
+  },
+  "dependencies": {
+    "@pierre/diffs": "^1.2.4"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@sveltejs/adapter-node": "^5.2.13",
+    "@sveltejs/kit": "^2.21.5",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@types/node": "^25.9.1",
+    "svelte": "^5.34.3",
+    "svelte-check": "^4.2.1",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
