@@ -6,7 +6,7 @@
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
 	import { Check, Clipboard, Edit3, FileText, HelpCircle, MessageSquarePlus, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, X, MoreVertical, BookOpenText } from '@lucide/svelte';
-	import type { ReviewAttentionLevel, ReviewFileSummary, ReviewFinding, ReviewMode, ReviewSessionSnapshot, UserReviewAnnotation } from '$lib/shared/review';
+	import type { ReviewAttentionLevel, ReviewDiffMode, ReviewFileSummary, ReviewFinding, ReviewMode, ReviewSessionSnapshot, UserReviewAnnotation } from '$lib/shared/review';
 
 	let session: ReviewSessionSnapshot | undefined;
 	let error: string | undefined;
@@ -35,6 +35,11 @@
 	let reviewLevel = 1;
 	let isolatedLevel = false;
 	let viewMenuOpen = false;
+	let diffSourceMode: ReviewDiffMode = 'uncommitted';
+	let diffSourceBase = 'origin/main';
+	let diffSourceLoading = false;
+	let diffSourceError: string | undefined;
+	let diffSourceSessionId: string | undefined;
 	let summaryDialog = false;
 	let summaryOpenedForSession: string | undefined;
 	let targetFindingId: string | undefined;
@@ -54,6 +59,7 @@
 	$: counts = annotationCounts(visibleFiles, findings, userAnnotations);
 	$: feedbackText = buildFeedback();
 	$: if (session && restoredSessionId !== session.id) restoreReviewed(session.id);
+	$: if (session && diffSourceSessionId !== session.id) restoreDiffSource(session);
 	$: if (session && agentDefaultsSessionId !== session.id) restoreAgentDefaults(session);
 	$: selectedAgentModel = session?.agentReview.models.find((model) => model.key === agentModelKey);
 	$: if (selectedAgentModel && !selectedAgentModel.thinkingLevels.includes(agentThinkingLevel as never)) agentThinkingLevel = selectedAgentModel.thinkingLevels[0] ?? 'off';
@@ -114,6 +120,13 @@
 		localStorage.setItem('pi-pair-review:settings', JSON.stringify({ modelKey: agentModelKey, thinkingLevel: agentThinkingLevel, suggestComments, autoReview, reviewLevel: Number(reviewLevel), isolatedLevel }));
 	}
 
+	function restoreDiffSource(nextSession: ReviewSessionSnapshot) {
+		diffSourceSessionId = nextSession.id;
+		diffSourceMode = nextSession.diffMode ?? 'uncommitted';
+		diffSourceBase = nextSession.diffBase ?? 'origin/main';
+		diffSourceError = undefined;
+	}
+
 	function restoreReviewed(id: string) {
 		restoredSessionId = id;
 		try {
@@ -166,6 +179,31 @@
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ modelKey: agentModelKey, thinkingLevel: agentThinkingLevel, suggestComments })
 		});
+	}
+
+	async function changeDiffSource() {
+		if ((userAnnotations.length > 0 || findings.length > 0 || reviewed.size > 0) && !confirm('Change diff source? Existing annotations, highlights, and reviewed markers for this session will be cleared.')) return;
+		diffSourceLoading = true;
+		diffSourceError = undefined;
+		try {
+			const response = await fetch(`/api/reviews/${reviewId}/diff`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ mode: diffSourceMode, base: diffSourceBase })
+			});
+			if (!response.ok) {
+				const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
+				throw new Error(body?.error ?? 'Failed to change diff source');
+			}
+			session = (await response.json()) as ReviewSessionSnapshot;
+			selectedFile = undefined;
+			reviewed = new Set();
+			localStorage.removeItem(`pi-pair-review:${reviewId}:reviewed`);
+		} catch (changeError) {
+			diffSourceError = changeError instanceof Error ? changeError.message : String(changeError);
+		} finally {
+			diffSourceLoading = false;
+		}
 	}
 
 	async function copyFeedback() {
@@ -454,6 +492,21 @@
 
 		<aside class="grid content-start gap-2 border-b border-border bg-bg p-2.5 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-auto lg:border-b-0 lg:border-r">
 			{#if connectionWarning}<section class="rounded-lg border border-warning/40 bg-warning-soft p-2.5 text-sm text-warning">{connectionWarning}</section>{/if}
+			<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+				<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Diff source</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{session.diffMode ?? 'diff'}</span></div>
+				<label class="grid gap-1 text-sm text-muted">Review
+					<select bind:value={diffSourceMode} disabled={diffSourceLoading || session.preReview.status === 'running'}>
+						<option value="unstaged">Unstaged changes</option>
+						<option value="staged">Staged changes</option>
+						<option value="uncommitted">Uncommitted changes</option>
+						<option value="commit">Last commit</option>
+						<option value="branch">Branch vs ref</option>
+					</select>
+				</label>
+				{#if diffSourceMode === 'branch'}<label class="grid gap-1 text-sm text-muted">Base ref <input bind:value={diffSourceBase} disabled={diffSourceLoading || session.preReview.status === 'running'} placeholder="origin/main" /></label>{/if}
+				<button type="button" disabled={diffSourceLoading || session.preReview.status === 'running'} on:click={changeDiffSource}>{diffSourceLoading ? 'Loading…' : 'Use source'}</button>
+				{#if diffSourceError}<p class="text-sm text-danger">{diffSourceError}</p>{/if}
+			</section>
 			<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
 				<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{reviewed.size}/{files.length}</span></div>
 				<div class="flex flex-wrap justify-end gap-2">

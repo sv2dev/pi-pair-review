@@ -4,9 +4,12 @@ import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AddressInfo } from 'node:net';
-import { addUserAnnotation, finishReview, getReviewFeedback, getReviewSession, isReviewFinished, removeReviewFinding, removeUserAnnotation, reviewListenerCount, startAgentReview, subscribeToReviewSession, updateUserAnnotation } from './store.ts';
+import { addUserAnnotation, finishReview, getReviewFeedback, getReviewSession, isReviewFinished, removeReviewFinding, removeUserAnnotation, replaceReviewDiff, reviewListenerCount, startAgentReview, subscribeToReviewSession, updateUserAnnotation } from './store.ts';
+import { buildDiffCommandFromSelection, summarizePatchFiles, type DiffMode } from './diff.ts';
+import { buildHeuristicPreReview } from './pre-review.ts';
 
 type SvelteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 type WebHandler = { handler?: SvelteHandler; close?: () => Promise<void> | void; dev?: boolean };
@@ -105,6 +108,48 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 		return;
 	}
 
+	if (req.method === 'POST' && tail === 'diff') {
+		void readJson(req).then(async (body) => {
+			const session = getReviewSession(id);
+			if (!session) {
+				writeJson(res, 404, { error: 'Review not found' });
+				return;
+			}
+			const value = body as Record<string, unknown>;
+			const mode = normalizeDiffMode(typeof value.mode === 'string' ? value.mode : '');
+			const base = typeof value.base === 'string' ? value.base.trim() : undefined;
+			if (!mode) {
+				writeJson(res, 400, { error: 'Invalid diff mode' });
+				return;
+			}
+			const diffCommand = buildDiffCommandFromSelection({ mode, base });
+			const diff = await execCommand(diffCommand.command[0]!, diffCommand.command.slice(1), session.cwd, 30_000);
+			if (diff.code !== 0) {
+				writeJson(res, 400, { error: diff.stderr || 'Failed to read git diff' });
+				return;
+			}
+			const patch = diff.stdout.trimEnd();
+			if (!patch.trim()) {
+				writeJson(res, 400, { error: `No ${diffCommand.baseDescription} found` });
+				return;
+			}
+			const heuristicReview = buildHeuristicPreReview(patch);
+			replaceReviewDiff(id, {
+				title: `Review ${diffCommand.baseDescription}`,
+				baseDescription: diffCommand.baseDescription,
+				diffMode: diffCommand.mode,
+				diffBase: diffCommand.base,
+				patch,
+				files: summarizePatchFiles(patch),
+				findings: heuristicReview.findings,
+				hunks: heuristicReview.hunks,
+				summary: heuristicReview.summary
+			});
+			writeJson(res, 200, getReviewSession(id) ?? { ok: true });
+		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
+		return;
+	}
+
 	if (req.method === 'POST' && tail === 'attachments') {
 		void readBuffer(req).then(async (buffer) => {
 			const name = url.searchParams.get('name') ?? 'image.png';
@@ -185,6 +230,31 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 
 function normalizeThinkingLevel(value: string) {
 	return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' ? value : 'off';
+}
+
+function normalizeDiffMode(value: string): DiffMode | undefined {
+	return value === 'unstaged' || value === 'staged' || value === 'uncommitted' || value === 'commit' || value === 'branch' ? value : undefined;
+}
+
+async function execCommand(command: string, args: string[], cwd: string, timeout: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+	return new Promise((resolve) => {
+		const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+		let stdout = '';
+		let stderr = '';
+		const timer = setTimeout(() => child.kill('SIGTERM'), timeout);
+		child.stdout.setEncoding('utf8');
+		child.stderr.setEncoding('utf8');
+		child.stdout.on('data', (chunk) => (stdout += chunk));
+		child.stderr.on('data', (chunk) => (stderr += chunk));
+		child.on('error', (error) => {
+			clearTimeout(timer);
+			resolve({ code: 1, stdout, stderr: error.message });
+		});
+		child.on('close', (code) => {
+			clearTimeout(timer);
+			resolve({ code, stdout, stderr });
+		});
+	});
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {

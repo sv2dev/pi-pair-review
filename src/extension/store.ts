@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ReviewFinding, ReviewHunkRank, ReviewSessionCreateInput, ReviewSessionSnapshot, UserReviewAnnotation, ReviewThinkingLevel } from '../lib/shared/review.ts';
+import type { ReviewDiffMode, ReviewFileSummary, ReviewFinding, ReviewHunkRank, ReviewSessionCreateInput, ReviewSessionSnapshot, UserReviewAnnotation, ReviewThinkingLevel } from '../lib/shared/review.ts';
 
 type Listener = (snapshot: ReviewSessionSnapshot) => void;
 type FeedbackHandler = (feedback: string) => void;
@@ -89,6 +89,31 @@ export function markPreReviewFailed(id: string, error: string, findings: ReviewF
 			hunks
 		}
 	}));
+}
+
+export function replaceReviewDiff(id: string, input: { title: string; baseDescription: string; diffMode: ReviewDiffMode; diffBase?: string; patch: string; files: ReviewFileSummary[]; findings: ReviewFinding[]; hunks: ReviewHunkRank[]; summary?: string }): boolean {
+	let replaced = false;
+	update(id, (snapshot) => {
+		replaced = true;
+		return {
+			...snapshot,
+			title: input.title,
+			baseDescription: input.baseDescription,
+			diffMode: input.diffMode,
+			diffBase: input.diffBase,
+			patch: input.patch,
+			files: input.files,
+			userAnnotations: [],
+			preReview: {
+				status: 'done',
+				finishedAt: new Date().toISOString(),
+				summary: input.summary,
+				findings: input.findings,
+				hunks: input.hunks
+			}
+		};
+	});
+	return replaced;
 }
 
 export function addUserAnnotation(id: string, input: Omit<UserReviewAnnotation, 'id' | 'createdAt'>): UserReviewAnnotation | undefined {

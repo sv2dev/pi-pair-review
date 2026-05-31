@@ -4,6 +4,7 @@ export type PreReviewStatus = 'idle' | 'running' | 'done' | 'failed';
 export type ReviewThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 export type ReviewAttentionLevel = 1 | 2 | 3 | 4 | 5;
 export type ReviewMode = 'deep-focus' | 'careful' | 'standard' | 'glance' | 'background';
+export type ReviewDiffMode = 'unstaged' | 'staged' | 'uncommitted' | 'commit' | 'branch';
 export type UserReviewAnnotationScope = 'global' | 'file' | 'line';
 
 export interface ReviewFileSummary {
@@ -64,6 +65,8 @@ export interface ReviewSessionSnapshot {
 	createdAt: string;
 	title: string;
 	baseDescription: string;
+	diffMode?: ReviewDiffMode;
+	diffBase?: string;
 	patch: string;
 	files: ReviewFileSummary[];
 	userAnnotations: UserReviewAnnotation[];
@@ -88,6 +91,8 @@ export interface ReviewSessionCreateInput {
 	cwd: string;
 	title: string;
 	baseDescription: string;
+	diffMode?: ReviewDiffMode;
+	diffBase?: string;
 	patch: string;
 	files: ReviewFileSummary[];
 	agentReview: ReviewSessionSnapshot['agentReview'];

@@ -10,12 +10,13 @@ export default function pairReviewExtension(pi: ExtensionAPI) {
 	pi.registerCommand('pair-review', {
 		description: 'Open a guided web code review for the current git diff',
 		getArgumentCompletions: (prefix) => {
-			const options = ['--unstaged', '--staged', '--cached', '--uncommitted', '--branch', '--base', '--target'];
+			const options = ['--unstaged', '-u', '--staged', '-s', '--cached', '--uncommitted', '-c', '--branch', '--base', '--target'];
 			const matches = options.filter((option) => option.startsWith(prefix));
 			return matches.length > 0 ? matches.map((value) => ({ value, label: value })) : null;
 		},
 		handler: async (args, ctx) => {
-			const diffCommand = buildDiffCommand(args);
+			const hasUncommittedChanges = await hasTrackedUncommittedChanges(pi, ctx);
+			const diffCommand = buildDiffCommand(args, { hasUncommittedChanges });
 			const diff = await pi.exec(diffCommand.command[0]!, diffCommand.command.slice(1), { cwd: ctx.cwd, timeout: 30_000 });
 
 			if (diff.code !== 0) {
@@ -37,6 +38,8 @@ export default function pairReviewExtension(pi: ExtensionAPI) {
 				cwd: ctx.cwd,
 				title: `Review ${diffCommand.baseDescription}`,
 				baseDescription: diffCommand.baseDescription,
+				diffMode: diffCommand.mode,
+				diffBase: diffCommand.base,
 				patch,
 				files: summarizePatchFiles(patch),
 				agentReview: {
@@ -75,6 +78,11 @@ export default function pairReviewExtension(pi: ExtensionAPI) {
 	pi.on('session_shutdown', async () => {
 		await closeReviewWebServer();
 	});
+}
+
+async function hasTrackedUncommittedChanges(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<boolean> {
+	const result = await pi.exec('git', ['diff', '--quiet', 'HEAD', '--'], { cwd: ctx.cwd, timeout: 30_000 });
+	return result.code === 1;
 }
 
 function modelKey(model: Model<any>): string {
