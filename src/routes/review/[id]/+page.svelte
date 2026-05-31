@@ -4,6 +4,7 @@
 	import { page } from '$app/stores';
 	import DiffViewer from '$lib/components/DiffViewer.svelte';
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
+	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
 	import { Check, Clipboard, Edit3, FileText, HelpCircle, MessageSquarePlus, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, X, MoreVertical, BookOpenText } from '@lucide/svelte';
 	import type { ReviewFileSummary, ReviewFinding, ReviewSessionSnapshot, UserReviewAnnotation } from '$lib/shared/review';
 
@@ -17,7 +18,7 @@
 	let restoredSessionId: string | undefined;
 	let rightOpen = true;
 	let annotationDraft: { id?: string; scope: 'global' | 'file' | 'line'; file?: string; line?: number; side?: 'additions' | 'deletions'; body: string } | undefined;
-	let annotationTextarea: HTMLTextAreaElement | undefined;
+	let mdEditor: { insertText: (text: string) => void; focus: () => void } | undefined;
 	let agentModelKey = '';
 	let agentThinkingLevel = 'off';
 	let suggestComments = true;
@@ -53,7 +54,6 @@
 	$: if (session && agentDefaultsSessionId !== session.id) restoreAgentDefaults(session);
 	$: selectedAgentModel = session?.agentReview.models.find((model) => model.key === agentModelKey);
 	$: if (selectedAgentModel && !selectedAgentModel.thinkingLevels.includes(agentThinkingLevel as never)) agentThinkingLevel = selectedAgentModel.thinkingLevels[0] ?? 'off';
-	$: if (annotationDraft && annotationTextarea) setTimeout(() => annotationTextarea?.focus());
 	$: if (agentDefaultsSessionId) persistReviewSettings();
 	$: if (session && autoReviewArmed && autoStartedSessionId !== session.id && session.preReview.status === 'idle' && agentModelKey) {
 		autoStartedSessionId = session.id;
@@ -77,11 +77,8 @@
 		events.onerror = () => {
 			connectionWarning = 'Live connection lost. EventSource will retry automatically.';
 		};
-		const onPageHide = () => void finish({ keepalive: true });
-		window.addEventListener('pagehide', onPageHide);
 		return () => {
 			events.close();
-			window.removeEventListener('pagehide', onPageHide);
 			window.removeEventListener('keydown', onKeyDown);
 		};
 	});
@@ -314,10 +311,8 @@
 		annotationDraft = { id: annotation.id, scope: annotation.scope, file: annotation.file, line: annotation.line, side: annotation.side, body: annotation.body };
 	}
 
-	async function handleAnnotationPaste(event: ClipboardEvent) {
-		const file = [...(event.clipboardData?.files ?? [])].find((item) => item.type.startsWith('image/'));
-		if (!file || !annotationDraft) return;
-		event.preventDefault();
+	async function handleAnnotationImagePaste(file: File) {
+		if (!annotationDraft) return;
 		const response = await fetch(`/api/reviews/${reviewId}/attachments?name=${encodeURIComponent(file.name || 'image.png')}`, {
 			method: 'POST',
 			headers: { 'content-type': file.type || 'application/octet-stream' },
@@ -325,16 +320,7 @@
 		});
 		if (!response.ok) return;
 		const { path } = (await response.json()) as { path: string };
-		insertIntoAnnotationDraft(path);
-	}
-
-	function insertIntoAnnotationDraft(text: string) {
-		if (!annotationDraft) return;
-		const textarea = annotationTextarea;
-		const start = textarea?.selectionStart ?? annotationDraft.body.length;
-		const end = textarea?.selectionEnd ?? start;
-		annotationDraft = { ...annotationDraft, body: `${annotationDraft.body.slice(0, start)}${text}${annotationDraft.body.slice(end)}` };
-		setTimeout(() => textarea?.setSelectionRange(start + text.length, start + text.length));
+		mdEditor?.insertText(path);
 	}
 
 	function highlightEntry(id: string) {
@@ -407,76 +393,76 @@
 </script>
 
 {#if error}
-	<main class="center"><div class="error-card">{error}</div></main>
+	<main class="grid min-h-screen place-items-center p-8"><div class="rounded-xl border border-danger/50 bg-danger-soft px-5 py-4 text-danger">{error}</div></main>
 {:else if !session}
-	<main class="center"><div class="loading-card">Loading review…</div></main>
+	<main class="grid min-h-screen place-items-center p-8"><div class="rounded-xl border border-border bg-surface-2 px-5 py-4 text-muted">Loading review…</div></main>
 {:else}
-	<div class:right-collapsed={!rightOpen} class="review-shell">
-		<header class="topbar">
-			<div>
-				<h1>{session.title}</h1>
-				<p class="meta">{session.cwd} · {visibleFiles.length}/{files.length} files · {session.baseDescription}</p>
+	<div class="grid min-h-screen grid-cols-1 grid-rows-[auto_1fr] {rightOpen ? 'lg:grid-cols-[17rem_minmax(0,1fr)_19rem]' : 'lg:grid-cols-[17rem_minmax(0,1fr)]'}">
+		<header class="sticky top-0 z-20 col-span-full flex items-center justify-between gap-4 border-b border-border bg-bg/95 px-4 backdrop-blur-sm" style="min-height: var(--topbar-height)">
+			<div class="min-w-0">
+				<h1 class="truncate text-[0.95rem] font-semibold">{session.title}</h1>
+				<p class="truncate text-xs text-muted">{session.cwd} · {visibleFiles.length}/{files.length} files · {session.baseDescription}</p>
 			</div>
-			<div class="controls">
-				<button title="Copy feedback" on:click={copyFeedback}><Clipboard size={16} />{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</button>
-				<button title="Insert feedback (S)" on:click={() => finish()}><Check size={16} />Insert feedback</button>
-				<button title="Toggle right sidebar (Ctrl+Alt+B)" on:click={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={16} />{:else}<PanelRightOpen size={16} />{/if}{rightOpen ? 'Hide' : 'Show'} annotations</button>
-				<div class="view-menu">
-					<button class="icon-button" title="View options" on:click={() => (viewMenuOpen = !viewMenuOpen)}><MoreVertical size={18} /></button>
+			<div class="flex items-center gap-2">
+				<button title="Copy feedback" on:click={copyFeedback}><Clipboard size={15} />{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</button>
+				<button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Insert feedback (S)" on:click={() => finish()}><Check size={15} />Insert feedback</button>
+				<button title="Toggle right sidebar (Ctrl+Alt+B)" on:click={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}{rightOpen ? 'Hide' : 'Show'} annotations</button>
+				<div class="relative">
+					<button class="w-8 px-0" title="View options" on:click={() => (viewMenuOpen = !viewMenuOpen)}><MoreVertical size={17} /></button>
 					{#if viewMenuOpen}
-						<div class="view-popover">
-							<label>View <select bind:value={diffStyle}><option value="split">Split</option><option value="unified">Unified</option></select></label>
-							<label class="toggle"><input type="checkbox" bind:checked={wrap} /> Wrap lines</label>
-							<button type="button" on:click={() => { shortcutsDialog = true; viewMenuOpen = false; }}><HelpCircle size={16} />Keyboard shortcuts</button>
+						<div class="absolute right-0 top-[calc(100%+0.4rem)] z-30 grid min-w-52 gap-2.5 rounded-lg border border-border-strong bg-surface p-3 shadow-[0_12px_32px_var(--shadow)]">
+							<label class="flex items-center justify-between gap-2 text-sm text-muted">View <select bind:value={diffStyle}><option value="split">Split</option><option value="unified">Unified</option></select></label>
+							<label class="flex items-center gap-2 text-sm text-muted"><input type="checkbox" bind:checked={wrap} /> Wrap lines</label>
+							<button type="button" on:click={() => { shortcutsDialog = true; viewMenuOpen = false; }}><HelpCircle size={15} />Keyboard shortcuts</button>
 						</div>
 					{/if}
 				</div>
 			</div>
 		</header>
 
-		<aside class="sidebar left">
-			{#if connectionWarning}<section class="panel warning">{connectionWarning}</section>{/if}
-			<section class="panel">
-				<div class="panel-heading"><h2>Files</h2><span>{reviewed.size}/{files.length}</span></div>
-				<div class="file-actions">
-					<button title="Comment overall (O)" on:click={() => (annotationDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={16} />Comment overall</button>
-					{#if selectedFile}<button on:click={() => (annotationDraft = { scope: 'file', file: selectedFile, body: '' })}><FileText size={16} />Comment file</button><button on:click={() => toggleReviewed(selectedFile!)}><Check size={16} />{reviewed.has(selectedFile) ? 'Mark not reviewed' : 'Mark reviewed'}</button>{/if}
+		<aside class="grid content-start gap-2 border-b border-border bg-bg p-2.5 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-auto lg:border-b-0 lg:border-r">
+			{#if connectionWarning}<section class="rounded-lg border border-warning/40 bg-warning-soft p-2.5 text-sm text-warning">{connectionWarning}</section>{/if}
+			<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+				<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{reviewed.size}/{files.length}</span></div>
+				<div class="flex flex-wrap justify-end gap-2">
+					<button title="Comment overall (O)" on:click={() => (annotationDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={15} />Comment overall</button>
+					{#if selectedFile}<button on:click={() => (annotationDraft = { scope: 'file', file: selectedFile, body: '' })}><FileText size={15} />Comment file</button><button on:click={() => toggleReviewed(selectedFile!)}><Check size={15} />{reviewed.has(selectedFile) ? 'Mark not reviewed' : 'Mark reviewed'}</button>{/if}
 				</div>
 				<FileTreeViewer files={visibleFiles} {selectedFile} {reviewed} {counts} on:select={(event) => (selectedFile = event.detail)} on:toggleReviewed={(event) => toggleReviewed(event.detail)} />
 			</section>
 		</aside>
 
-		<main class="diff-pane">
+		<main class="min-w-0 px-3 py-3 lg:pr-0" style="scroll-padding-top: calc(var(--topbar-height) + 1rem)">
 			<DiffViewer {session} {findings} {hunkRanks} {reviewLevel} {isolatedLevel} {reviewed} {selectedFile} {targetFindingId} {targetAnnotationId} {diffStyle} {wrap} on:annotate={(event) => startLineAnnotation(event.detail)} on:toggleReviewed={(event) => toggleReviewed(event.detail)} on:editAnnotation={(event) => editAnnotation(event.detail)} on:deleteAnnotation={(event) => removeAnnotation(event.detail)} />
 		</main>
 
 		{#if rightOpen}
-			<aside class="sidebar right">
-				<section class="panel">
-					<button class="panel-toggle" on:click={() => (aiOpen = !aiOpen)}><h2>AI review</h2><span>{aiOpen ? '▾' : '▸'} {session.preReview.status === 'done' ? '✓ done' : session.preReview.status}</span></button>
+			<aside class="grid content-start gap-2 border-t border-border bg-bg p-2.5 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-auto lg:border-t-0 lg:border-l">
+				<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+					<button class="flex w-full items-center justify-between gap-3 border-0 bg-transparent p-0 hover:bg-transparent" on:click={() => (aiOpen = !aiOpen)}><h2 class="text-[0.85rem] font-semibold">AI review</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{aiOpen ? '▾' : '▸'} {session.preReview.status === 'done' ? '✓ done' : session.preReview.status}</span></button>
 					{#if aiOpen}
-						<div class="agent-controls">
-							<button title="AI review settings" on:click={() => (modelDialog = true)}>{#if session.preReview.status === 'running'}<span class="spinner"></span>{:else}<Settings size={16} />{/if}Model: {selectedAgentModel?.name ?? 'none'}</button>
-							{#if session.preReview.status === 'done' && session.preReview.summary}<button title="Show summary (S)" on:click={() => (summaryDialog = true)}><BookOpenText size={16} /></button>{/if}
+						<div class="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+							<button title="AI review settings" on:click={() => (modelDialog = true)}>{#if session.preReview.status === 'running'}<span class="inline-block h-3.5 w-3.5 flex-none animate-spin rounded-full border-2 border-accent/25 border-t-accent"></span>{:else}<Settings size={15} />{/if}Model: {selectedAgentModel?.name ?? 'none'}</button>
+							{#if session.preReview.status === 'done' && session.preReview.summary}<button class="w-9 px-0" title="Show summary (S)" on:click={() => (summaryDialog = true)}><BookOpenText size={15} /></button>{/if}
 						</div>
 						{#if session.preReview.status === 'done'}
-							<div class="panel-heading"><h2>Review depth</h2><span>Level {reviewLevel}/5</span></div>
-							<input title="Review depth (+/-)" type="range" min="1" max="5" step="1" bind:value={reviewLevel} />
-							<label class="toggle" title="Toggle isolated review level (I)"><input type="checkbox" bind:checked={isolatedLevel} /> Isolated level</label>
+							<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Review depth</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">Level {reviewLevel}/5</span></div>
+							<input title="Review depth (+/-)" type="range" min="1" max="5" step="1" bind:value={reviewLevel} class="w-full" />
+							<label class="flex items-center gap-2 text-sm text-muted" title="Toggle isolated review level (I)"><input type="checkbox" bind:checked={isolatedLevel} /> Isolated level</label>
 						{:else}
-							<p class="note">{session.preReview.status === 'idle' ? 'Run agent review from model settings.' : 'Ranking hunks…'}</p>
+							<p class="text-sm text-muted">{session.preReview.status === 'idle' ? 'Run agent review from model settings.' : 'Ranking hunks…'}</p>
 						{/if}
-						{#if session.agentReview.models.length === 0}<p class="note">No authenticated models available.</p>{/if}
-						{#if session.preReview.error}<p class="note">{session.preReview.error}</p>{/if}
+						{#if session.agentReview.models.length === 0}<p class="text-sm text-muted">No authenticated models available.</p>{/if}
+						{#if session.preReview.error}<p class="text-sm text-muted">{session.preReview.error}</p>{/if}
 					{/if}
 				</section>
-				<section class="panel">
-					<div class="panel-heading"><h2>Agent annotations</h2><span>{findings.length}</span></div>
-					{#if findings.length === 0}<p class="empty">No highlights yet.</p>{:else}<div class="finding-list">{#each findings as finding}<div class:flash={highlightedEntryId === finding.id} class="finding"><div class="card-top"><button class="finding-main" on:click={() => selectFinding(finding)}><span class="card-meta"><span class={severityClass(finding)}>L{finding.attentionLevel} · {finding.severity}</span><small>{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="remove" title="Remove" on:click={() => removeFinding(finding)}><Trash2 size={15} /></button></div><button class="finding-body" on:click={() => selectFinding(finding)}><div class="rendered-markdown">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
+				<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+					<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Agent annotations</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{findings.length}</span></div>
+					{#if findings.length === 0}<p class="text-sm text-muted">No highlights yet.</p>{:else}<div class="grid gap-2">{#each findings as finding}<div class="grid gap-1.5 rounded-lg p-2 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-1.5"><button class="min-w-0 flex-1 border-0 bg-transparent p-0 text-left hover:bg-transparent" on:click={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-2"><span class="{severityClass(finding)} rounded-full px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase">L{finding.attentionLevel} · {finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none rounded-full border-0 bg-transparent px-1 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" on:click={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block w-full border-0 bg-transparent p-0 text-left hover:bg-transparent" on:click={() => selectFinding(finding)}><div class="rendered-markdown text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
 				</section>
-				<section class="panel">
-					<div class="panel-heading"><h2>User annotations</h2><span>{userAnnotations.length}</span></div>
-					{#if userAnnotations.length === 0}<p class="empty">Click line numbers, add file notes, or comment overall.</p>{:else}<div class="finding-list">{#each userAnnotations as annotation}<div class:flash={highlightedEntryId === annotation.id} class="finding"><div class="card-top"><button class="finding-main" on:click={() => selectAnnotation(annotation)}><span class="card-meta"><small>{annotation.scope === 'global' ? 'Overall' : annotation.scope === 'file' ? annotation.file : `${annotation.file}:${annotation.line}`}</small></span></button><button class="remove" title="Edit" on:click={() => editAnnotation(annotation)}><Edit3 size={15} /></button><button class="remove" title="Remove" on:click={() => removeAnnotation(annotation)}><Trash2 size={15} /></button></div><button class="finding-body" on:click={() => selectAnnotation(annotation)}><div class="rendered-markdown">{@html renderMarkdown(annotation.body)}</div></button></div>{/each}</div>{/if}
+				<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+					<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">User annotations</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{userAnnotations.length}</span></div>
+					{#if userAnnotations.length === 0}<p class="text-sm text-muted">Click line numbers, add file notes, or comment overall.</p>{:else}<div class="grid gap-2">{#each userAnnotations as annotation}<div class="grid gap-1.5 rounded-lg p-2 transition-colors {highlightedEntryId === annotation.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-1.5"><button class="min-w-0 flex-1 border-0 bg-transparent p-0 text-left hover:bg-transparent" on:click={() => selectAnnotation(annotation)}><span class="flex min-w-0 items-center gap-2"><small class="min-w-0 truncate text-muted">{annotation.scope === 'global' ? 'Overall' : annotation.scope === 'file' ? annotation.file : `${annotation.file}:${annotation.line}`}</small></span></button><button class="flex-none rounded-full border-0 bg-transparent px-1 text-muted hover:bg-surface-hover hover:text-fg" title="Edit" on:click={() => editAnnotation(annotation)}><Edit3 size={14} /></button><button class="flex-none rounded-full border-0 bg-transparent px-1 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" on:click={() => removeAnnotation(annotation)}><Trash2 size={14} /></button></div><button class="block w-full border-0 bg-transparent p-0 text-left hover:bg-transparent" on:click={() => selectAnnotation(annotation)}><div class="rendered-markdown text-sm">{@html renderMarkdown(annotation.body)}</div></button></div>{/each}</div>{/if}
 				</section>
 			</aside>
 		{/if}
@@ -485,126 +471,69 @@
 
 {#if modelDialog}
 	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="modal-backdrop" on:click={(event) => backdropClick(event, () => (modelDialog = false))}>
-		<div class="annotation-modal">
-			<h2>AI review model</h2>
-			<label>Model
-				<select bind:value={agentModelKey} disabled={session?.preReview.status === 'running'}>
+	<div class="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4 backdrop-blur-sm" on:click={(event) => backdropClick(event, () => (modelDialog = false))}>
+		<div class="grid w-[min(34rem,calc(100vw-2rem))] gap-3 rounded-xl border border-border bg-surface p-5 shadow-[0_16px_48px_var(--shadow)]">
+			<h2 class="text-[0.95rem] font-semibold">AI review model</h2>
+			<label class="grid gap-1.5 text-sm text-muted">Model
+				<select class="w-full" bind:value={agentModelKey} disabled={session?.preReview.status === 'running'}>
 					{#each session?.agentReview.models ?? [] as model}
 						<option value={model.key}>{model.provider}/{model.name}</option>
 					{/each}
 				</select>
 			</label>
-			<label>Thinking
-				<select bind:value={agentThinkingLevel} disabled={session?.preReview.status === 'running'}>
+			<label class="grid gap-1.5 text-sm text-muted">Thinking
+				<select class="w-full" bind:value={agentThinkingLevel} disabled={session?.preReview.status === 'running'}>
 					{#each selectedAgentModel?.thinkingLevels ?? ['off'] as level}
 						<option value={level}>{level}</option>
 					{/each}
 				</select>
 			</label>
-			<label class="toggle"><input type="checkbox" bind:checked={suggestComments} /> Suggest comments</label>
-			<label class="toggle"><input type="checkbox" bind:checked={autoReview} /> Run automatically next time</label>
-			<div class="modal-actions"><button title="Close dialog (Esc)" type="button" on:click={() => { persistReviewSettings(); modelDialog = false; }}>Close</button><button title="Run AI review" type="button" disabled={!agentModelKey || session?.preReview.status === 'running'} on:click={runAgentReview}><Play size={16} />Run</button></div>
+			<label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={suggestComments} /> Suggest comments</label>
+			<label class="flex items-center gap-2 text-sm"><input type="checkbox" bind:checked={autoReview} /> Run automatically next time</label>
+			<div class="flex justify-end gap-2 pt-1"><button title="Close dialog (Esc)" type="button" on:click={() => { persistReviewSettings(); modelDialog = false; }}>Close</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Run AI review" type="button" disabled={!agentModelKey || session?.preReview.status === 'running'} on:click={runAgentReview}><Play size={15} />Run</button></div>
 		</div>
 	</div>
 {/if}
 
 {#if summaryDialog}
 	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="modal-backdrop" on:click={(event) => backdropClick(event, () => (summaryDialog = false))}>
-		<div class="annotation-modal summary-modal">
-			<h2>Agent summary</h2>
-			<div class="markdown-body">{@html renderMarkdown(session?.preReview.summary ?? '')}</div>
-			<div class="modal-actions"><button type="button" on:click={() => (summaryDialog = false)}>Close</button></div>
+	<div class="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4 backdrop-blur-sm" on:click={(event) => backdropClick(event, () => (summaryDialog = false))}>
+		<div class="grid max-h-[min(70vh,42rem)] w-[min(40rem,calc(100vw-2rem))] gap-3 overflow-auto rounded-xl border border-border bg-surface p-5 shadow-[0_16px_48px_var(--shadow)]">
+			<h2 class="text-[0.95rem] font-semibold">Agent summary</h2>
+			<div class="markdown-body text-sm">{@html renderMarkdown(session?.preReview.summary ?? '')}</div>
+			<div class="flex justify-end gap-2 pt-1"><button type="button" on:click={() => (summaryDialog = false)}>Close</button></div>
 		</div>
 	</div>
 {/if}
 
 {#if shortcutsDialog}
 	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="modal-backdrop" on:click={(event) => backdropClick(event, () => (shortcutsDialog = false))}>
-		<div class="annotation-modal shortcuts-modal">
-			<h2>Keyboard shortcuts</h2>
-			<dl class="shortcuts-list">
-				<div><dt>?</dt><dd>Show keyboard shortcuts</dd></div>
-				<div><dt>O</dt><dd>Comment overall</dd></div>
-				<div><dt>M</dt><dd>Comment last line target</dd></div>
-				<div><dt>S</dt><dd>Show summary</dd></div>
-				<div><dt>I</dt><dd>Toggle isolated level</dd></div>
-				<div><dt>+ / −</dt><dd>Change review depth</dd></div>
-				<div><dt>Cmd/Ctrl+Enter</dt><dd>Insert feedback</dd></div>
-				<div><dt>Esc</dt><dd>Close dialog</dd></div>
+	<div class="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4 backdrop-blur-sm" on:click={(event) => backdropClick(event, () => (shortcutsDialog = false))}>
+		<div class="grid w-[min(32rem,calc(100vw-2rem))] gap-3 rounded-xl border border-border bg-surface p-5 shadow-[0_16px_48px_var(--shadow)]">
+			<h2 class="text-[0.95rem] font-semibold">Keyboard shortcuts</h2>
+			<dl class="grid gap-2">
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><dt class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">?</dt><dd class="text-sm text-muted">Show keyboard shortcuts</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><dt class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">O</dt><dd class="text-sm text-muted">Comment overall</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><dt class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">M</dt><dd class="text-sm text-muted">Comment last line target</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><dt class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">S</dt><dd class="text-sm text-muted">Show summary</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><dt class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">I</dt><dd class="text-sm text-muted">Toggle isolated level</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><dt class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">+ / −</dt><dd class="text-sm text-muted">Change review depth</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><dt class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">Cmd/Ctrl+Enter</dt><dd class="text-sm text-muted">Insert feedback</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><dt class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">Esc</dt><dd class="text-sm text-muted">Close dialog</dd></div>
 			</dl>
-			<div class="modal-actions"><button type="button" on:click={() => (shortcutsDialog = false)}>Close</button></div>
+			<div class="flex justify-end gap-2 pt-1"><button type="button" on:click={() => (shortcutsDialog = false)}>Close</button></div>
 		</div>
 	</div>
 {/if}
 
 {#if annotationDraft}
 	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-	<div class="modal-backdrop" on:click={(event) => backdropClick(event, () => (annotationDraft = undefined))}>
-		<form class="annotation-modal" on:submit|preventDefault={saveAnnotation}>
-			<h2>{annotationDraft.id ? 'Edit annotation' : 'Add annotation'}</h2>
-			<p class="meta">{annotationDraft.scope === 'global' ? 'Overall review' : annotationDraft.scope === 'file' ? annotationDraft.file : `${annotationDraft.file}:${annotationDraft.line} · ${annotationDraft.side}`}</p>
-			<textarea title="Paste images to insert a temp file path. Save with Ctrl+S or Cmd+Enter; close with Esc" bind:this={annotationTextarea} bind:value={annotationDraft.body} on:paste={handleAnnotationPaste}></textarea>
-			<div class="modal-actions"><button title="Close dialog (Esc)" type="button" on:click={() => (annotationDraft = undefined)}>Cancel</button><button title="Save comment (Ctrl+S or Cmd+Enter)" type="submit">Save</button></div>
+	<div class="fixed inset-0 z-40 grid place-items-center bg-black/50 p-4 backdrop-blur-sm" on:click={(event) => backdropClick(event, () => (annotationDraft = undefined))}>
+		<form class="grid w-[min(36rem,calc(100vw-2rem))] gap-3 rounded-xl border border-border bg-surface p-5 shadow-[0_16px_48px_var(--shadow)]" on:submit|preventDefault={saveAnnotation}>
+			<h2 class="text-[0.95rem] font-semibold">{annotationDraft.id ? 'Edit annotation' : 'Add annotation'}</h2>
+			<p class="text-xs text-muted">{annotationDraft.scope === 'global' ? 'Overall review' : annotationDraft.scope === 'file' ? annotationDraft.file : `${annotationDraft.file}:${annotationDraft.line} · ${annotationDraft.side}`}</p>
+			<MarkdownEditor bind:this={mdEditor} bind:value={annotationDraft.body} on:imagepaste={(event) => handleAnnotationImagePaste(event.detail)} />
+			<div class="flex justify-end gap-2 pt-1"><button title="Close dialog (Esc)" type="button" on:click={() => (annotationDraft = undefined)}>Cancel</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Save comment (Ctrl+S or Cmd+Enter)" type="submit">Save</button></div>
 		</form>
 	</div>
 {/if}
-
-<style>
-	.review-shell { --topbar-height: 4.25rem; display: grid; grid-template-columns: 22rem minmax(0, 1fr) 24rem; grid-template-rows: auto 1fr; min-height: 100vh; }
-	.review-shell.right-collapsed { grid-template-columns: 22rem minmax(0, 1fr); }
-	.topbar { position: sticky; top: 0; z-index: 5; display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 1rem; min-height: var(--topbar-height); padding: 0.55rem 1.25rem; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(18px); }
-	h1, h2, p { margin: 0; } h1 { font-size: 1.15rem; } h2 { font-size: 0.95rem; }
-	.meta, .note, .empty, small { color: var(--muted); }
-	.controls { display: flex; align-items: center; gap: 0.75rem; }
-	.controls label { display: flex; align-items: center; gap: 0.4rem; color: var(--muted); font-size: 0.85rem; }
-	.view-menu { position: relative; }
-	.icon-button { width: 2rem; padding: 0.35rem; }
-	.view-popover { position: absolute; right: 0; top: calc(100% + 0.4rem); z-index: 20; display: grid; gap: 0.65rem; min-width: 13rem; padding: 0.75rem; border: 1px solid var(--border-strong); border-radius: 0.75rem; background: var(--panel-solid); box-shadow: 0 12px 32px rgba(0,0,0,0.35); }
-	button, select { border: 1px solid var(--border-strong); border-radius: 0.5rem; background: var(--panel-soft); color: var(--text); padding: 0.35rem 0.5rem; line-height: 1.3; }
-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem; }
-.icon { display: inline-flex; align-items: center; justify-content: center; width: 1em; height: 1em; line-height: 1; flex: none; position: relative; top: 0.04em; font-size: 0.9em; }
-.spinner { display: inline-block; width: 0.85rem; height: 0.85rem; border: 2px solid rgba(139,211,255,.25); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; flex: none; }
-@keyframes spin { to { transform: rotate(360deg); } }
-	.sidebar { position: sticky; top: var(--topbar-height); height: calc(100vh - var(--topbar-height)); overflow: auto; display: grid; align-content: start; gap: 1rem; padding: 1rem; background: var(--panel); }
-	.sidebar.left { border-right: 1px solid var(--border); } .sidebar.right { border-left: 1px solid var(--border); }
-	.panel { display: grid; gap: 0.75rem; padding: 0.9rem; border: 1px solid var(--border); border-radius: 1rem; background: var(--panel); }
-	.panel-heading, .panel-toggle { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
-	.panel-toggle { width: 100%; border: 0; background: transparent; padding: 0; text-align: left; }
-	.panel-heading span, .finding span:not(.card-meta) { border-radius: 999px; padding: 0.15rem 0.45rem; background: var(--code-bg); color: var(--muted); font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
-	.agent-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; }
-	.file-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
-	.depth-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 0.75rem; }
-	.finding-list { display: grid; gap: 0.5rem; }
-	.finding { display: grid; gap: 0.35rem; width: 100%; border-radius: 0.75rem; background: var(--panel-soft); padding: 0.35rem; transition: background 0.2s, box-shadow 0.2s; }
-	.finding:hover { background: var(--panel-hover); }
-	.finding.flash { background: rgba(139, 211, 255, 0.18); box-shadow: 0 0 0 1px rgba(139, 211, 255, 0.55); }
-	.card-top { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 0.35rem; }
-	.finding-main, .finding-body { min-width: 0; border: 0; background: transparent; color: inherit; padding: 0; text-align: left; cursor: pointer; }
-	.finding-body { display: block; width: 100%; justify-content: flex-start; align-items: flex-start; }
-	.card-meta { display: flex; align-items: center; justify-content: flex-start; gap: 0.5rem; min-width: 0; text-align: left; }
-	.card-meta small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.remove { align-self: start; border: 0; border-radius: 999px; background: transparent; color: var(--muted); padding: 0 0.35rem; font-size: 1rem; line-height: 1.2; min-width: 1.5rem; }
-	.remove:hover { background: rgba(255, 107, 122, 0.14); color: var(--danger); }
-	.severity-critical { background: var(--danger-soft) !important; color: var(--danger) !important; } .severity-high { background: var(--warning-soft) !important; color: var(--warning) !important; } .severity-medium { background: var(--warning-soft) !important; color: var(--warning) !important; } .severity-low { background: var(--accent-soft) !important; color: var(--accent) !important; }
-	.diff-pane { min-width: 0; padding: 1.25rem 0 1rem 1rem; scroll-padding-top: calc(var(--topbar-height) + 1rem); }
-	.center { display: grid; min-height: 100vh; place-items: center; padding: 2rem; }
-	.error-card, .loading-card { padding: 1rem 1.25rem; border: 1px solid var(--border); border-radius: 1rem; background: var(--panel-soft); }
-	.error-card { border-color: rgba(255, 107, 122, 0.45); color: #ffd7dc; } .warning { border-color: rgba(255, 209, 102, 0.35); color: #ffe0a3; }
-	.modal-backdrop { position: fixed; inset: 0; z-index: 10; display: grid; place-items: center; background: rgba(0,0,0,0.35); }
-	.annotation-modal { display: grid; gap: 0.75rem; width: min(36rem, calc(100vw - 2rem)); padding: 1rem; border: 1px solid var(--border); border-radius: 1rem; background: var(--panel-solid); }
-	.summary-modal { max-height: min(70vh, 42rem); overflow: auto; }
-	.markdown-body, .rendered-markdown { display: grid; justify-items: start; gap: 0.7rem; width: 100%; line-height: 1.55; color: var(--text); text-align: left; }
-	.markdown-body :global(p), .rendered-markdown :global(p), .markdown-body :global(h1), .markdown-body :global(h2), .markdown-body :global(h3), .rendered-markdown :global(h1), .rendered-markdown :global(h2), .rendered-markdown :global(h3) { margin: 0; }
-	.markdown-body :global(ul), .markdown-body :global(ol), .rendered-markdown :global(ul), .rendered-markdown :global(ol) { margin: 0; padding-left: 1.35rem; }
-	.markdown-body :global(code), .rendered-markdown :global(code) { border-radius: 0.3rem; background: var(--bg); padding: 0.1rem 0.25rem; }
-	.shortcuts-list { display: grid; gap: 0.5rem; margin: 0; }
-	.shortcuts-list div { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: 1rem; align-items: center; }
-	.shortcuts-list dt { justify-self: start; border-radius: 0.35rem; background: var(--code-bg); padding: 0.15rem 0.4rem; font-weight: 700; }
-	.shortcuts-list dd { margin: 0; color: var(--muted); }
-	textarea { min-height: 10rem; border: 1px solid var(--border-strong); border-radius: 0.75rem; background: var(--bg); color: var(--text); padding: 0.75rem; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2; }
-	.modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
-	@media (max-width: 1180px) { .review-shell, .review-shell.right-collapsed { grid-template-columns: 1fr; } .sidebar { position: static; height: auto; border: 0 !important; border-bottom: 1px solid var(--border) !important; } }
-</style>

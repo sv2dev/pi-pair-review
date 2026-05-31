@@ -52,50 +52,7 @@
 	}
 </script>
 
-<button class:selected={!selectedFile} class="all-files" on:click={() => dispatch('select', undefined)}>All files</button>
-<div class="tree-host" bind:this={host}></div>
-
-<style>
-	.all-files {
-		width: 100%;
-		border: 0;
-		border-radius: 0.75rem;
-		background: var(--panel-soft);
-		color: inherit;
-		padding: 0.7rem;
-		text-align: left;
-		cursor: pointer;
-	}
-
-	.all-files.selected,
-	.all-files:hover {
-		background: var(--panel-hover);
-	}
-
-	.tree-host {
-		height: calc(100vh - 14rem);
-		min-height: 18rem;
-	}
-
-	:global(.tree-decoration) {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-	}
-
-	:global(.tree-badge) {
-		border-radius: 999px;
-		padding: 0.05rem 0.35rem;
-		background: var(--warning-soft);
-		color: var(--warning);
-		font-size: 0.68rem;
-		font-weight: 700;
-	}
-
-	:global(.tree-reviewed) {
-		border: 0;
-		background: transparent;
-		color: var(--accent);
-		cursor: pointer;
-	}
-</style>
+<button
+	class="mb-2 w-full rounded-md border-0 px-3 py-2 text-left text-sm hover:bg-surface-hover {!selectedFile ? 'bg-surface-hover font-medium' : 'bg-surface-2'}"
+	on:click={() => dispatch('select', undefined)}>All files</button>
+<div class="h-[calc(100vh-14rem)] min-h-72" bind:this={host}></div>

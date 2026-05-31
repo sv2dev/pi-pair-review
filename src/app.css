@@ -1,97 +1,328 @@
+@import 'tailwindcss';
+
+/* ------------------------------------------------------------------ *
+ * Palette — Linear-like neutral zinc + indigo/violet accent.
+ * Raw custom properties flip automatically with the OS color scheme,
+ * so the @theme tokens below resolve through them without dark: usage.
+ * ------------------------------------------------------------------ */
 :root {
 	color-scheme: light dark;
-	font-family:
-		Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-	--bg: #f6f8fc;
-	--bg-radial: rgba(86, 112, 255, 0.12);
-	--text: #172033;
-	--muted: #5d6b85;
-	--panel: rgba(255, 255, 255, 0.9);
-	--panel-solid: #ffffff;
-	--panel-soft: #eef2f8;
-	--panel-hover: #e4eaf4;
-	--border: #d5ddeb;
-	--border-strong: #bdc8da;
-	--button: #f3f6fb;
-	--code-bg: #e8edf6;
-	--shadow: rgba(31, 41, 61, 0.14);
-	--accent: #1264a3;
-	--accent-soft: rgba(18, 100, 163, 0.14);
-	--danger: #c9364a;
-	--danger-soft: rgba(201, 54, 74, 0.12);
-	--warning: #946200;
-	--warning-soft: rgba(148, 98, 0, 0.14);
-	background: var(--bg);
-	color: var(--text);
+
+	--topbar-height: 2.9rem;
+
+	--bg: #fbfbfc;
+	--fg: #18181b;
+	--muted: #71717a;
+
+	--surface: #ffffff;
+	--surface-2: #f4f4f5;
+	--surface-hover: #ececef;
+
+	--border: #e4e4e7;
+	--border-strong: #d4d4d8;
+
+	--accent: #5b5bd6;
+	--accent-fg: #ffffff;
+	--accent-soft: rgba(91, 91, 214, 0.12);
+
+	--danger: #dc2626;
+	--danger-soft: rgba(220, 38, 38, 0.12);
+
+	--warning: #b45309;
+	--warning-soft: rgba(180, 83, 9, 0.13);
+
+	--code-bg: #f4f4f5;
+	--shadow: rgba(24, 24, 27, 0.08);
+
+	--cm-heading: #4f46e5;
+	--cm-code: #0e7490;
 }
 
 @media (prefers-color-scheme: dark) {
 	:root {
-		--bg: #0d0f14;
-		--bg-radial: rgba(86, 112, 255, 0.16);
-		--text: #e7eaf0;
-		--muted: #9aa6c1;
-		--panel: rgba(17, 21, 29, 0.86);
-		--panel-solid: #11151d;
-		--panel-soft: #151923;
-		--panel-hover: #202637;
-		--border: #293142;
-		--border-strong: #333c4f;
-		--button: #151923;
-		--code-bg: #202531;
-		--shadow: rgba(0, 0, 0, 0.35);
-		--accent: #8bd3ff;
-		--accent-soft: rgba(139, 211, 255, 0.16);
-		--danger: #ff6b7a;
-		--danger-soft: rgba(255, 107, 122, 0.14);
-		--warning: #ffd166;
-		--warning-soft: rgba(255, 209, 102, 0.16);
+		--bg: #09090b;
+		--fg: #ededf0;
+		--muted: #8b8b96;
+
+		--surface: #121215;
+		--surface-2: #18181b;
+		--surface-hover: #232329;
+
+		--border: #26262b;
+		--border-strong: #36363d;
+
+		--accent: #8b8bf5;
+		--accent-fg: #0b0b12;
+		--accent-soft: rgba(139, 139, 245, 0.16);
+
+		--danger: #f87171;
+		--danger-soft: rgba(248, 113, 113, 0.15);
+
+		--warning: #f5b14a;
+		--warning-soft: rgba(245, 177, 74, 0.16);
+
+		--code-bg: #1c1c20;
+		--shadow: rgba(0, 0, 0, 0.4);
+
+		--cm-heading: #a5a3f8;
+		--cm-code: #67e8f9;
 	}
 }
 
-* { box-sizing: border-box; }
+/* ------------------------------------------------------------------ *
+ * Theme tokens — alias palette into Tailwind utilities.
+ * Generates bg-*, text-*, border-*, ring-*, etc.
+ * ------------------------------------------------------------------ */
+@theme inline {
+	--font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+		'Segoe UI', sans-serif;
+	--font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-body {
-	margin: 0;
-	min-height: 100vh;
-	background:
-		radial-gradient(circle at top left, var(--bg-radial), transparent 32rem),
-		var(--bg);
+	--color-bg: var(--bg);
+	--color-fg: var(--fg);
+	--color-muted: var(--muted);
+
+	--color-surface: var(--surface);
+	--color-surface-2: var(--surface-2);
+	--color-surface-hover: var(--surface-hover);
+
+	--color-border: var(--border);
+	--color-border-strong: var(--border-strong);
+
+	--color-accent: var(--accent);
+	--color-accent-fg: var(--accent-fg);
+	--color-accent-soft: var(--accent-soft);
+
+	--color-danger: var(--danger);
+	--color-danger-soft: var(--danger-soft);
+
+	--color-warning: var(--warning);
+	--color-warning-soft: var(--warning-soft);
+
+	--color-code: var(--code-bg);
 }
 
-a { color: inherit; }
-
-button,
-input,
-select { font: inherit; }
+/* ------------------------------------------------------------------ *
+ * Base
+ * ------------------------------------------------------------------ */
+body {
+	min-height: 100vh;
+	background: var(--bg);
+	color: var(--fg);
+	-webkit-font-smoothing: antialiased;
+}
 
 code {
-	padding: 0.1rem 0.35rem;
-	border-radius: 0.35rem;
+	border-radius: 0.3rem;
 	background: var(--code-bg);
+	padding: 0.1rem 0.35rem;
+	font-family: var(--font-mono);
+	font-size: 0.85em;
 }
 
-.landing {
-	display: grid;
-	min-height: 100vh;
-	place-items: center;
-	padding: 2rem;
+/* Review-depth slider accent */
+input[type='range'] {
+	accent-color: var(--accent);
+}
+input[type='checkbox'] {
+	accent-color: var(--accent);
 }
 
-.landing section {
-	max-width: 40rem;
-	padding: 2rem;
+/* ------------------------------------------------------------------ *
+ * Default form controls — compact, consistent. Utility classes in
+ * markup override these via Tailwind's utilities layer when a button
+ * needs a different look (primary / ghost / icon-only).
+ * ------------------------------------------------------------------ */
+@layer base {
+	button,
+	select {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.35rem;
+		border: 1px solid var(--border-strong);
+		border-radius: 0.5rem;
+		background: var(--surface-2);
+		color: var(--fg);
+		padding: 0.3rem 0.6rem;
+		font-size: 0.8rem;
+		line-height: 1.3;
+		cursor: pointer;
+		transition:
+			background-color 0.15s ease,
+			border-color 0.15s ease,
+			opacity 0.15s ease;
+	}
+
+	button:hover:not(:disabled),
+	select:hover:not(:disabled) {
+		background: var(--surface-hover);
+	}
+
+	button:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	textarea {
+		border: 1px solid var(--border-strong);
+		border-radius: 0.6rem;
+		background: var(--bg);
+		color: var(--fg);
+		padding: 0.7rem;
+		font: 13px/1.55 var(--font-mono);
+		tab-size: 2;
+	}
+
+	textarea:focus-visible,
+	select:focus-visible,
+	button:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
+	}
+}
+
+/* ------------------------------------------------------------------ *
+ * Severity chips — produced by severityClass() in the review page.
+ * ------------------------------------------------------------------ */
+.severity-critical {
+	background: var(--danger-soft) !important;
+	color: var(--danger) !important;
+}
+.severity-high,
+.severity-medium {
+	background: var(--warning-soft) !important;
+	color: var(--warning) !important;
+}
+.severity-low {
+	background: var(--accent-soft) !important;
+	color: var(--accent) !important;
+}
+
+/* ------------------------------------------------------------------ *
+ * Rendered markdown (findings, annotations, agent summary).
+ * Preflight strips list/heading margins, so restore them here.
+ * ------------------------------------------------------------------ */
+.rendered-markdown,
+.markdown-body,
+.annotation-md {
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+:is(.rendered-markdown, .markdown-body, .annotation-md)
+	:is(p, h1, h2, h3, h4, ul, ol, pre, blockquote) {
+	margin: 0 0 0.45rem;
+}
+:is(.rendered-markdown, .markdown-body, .annotation-md) > :last-child {
+	margin-bottom: 0;
+}
+:is(.rendered-markdown, .markdown-body, .annotation-md) :is(h1, h2, h3, h4) {
+	font-weight: 600;
+}
+:is(.rendered-markdown, .markdown-body, .annotation-md) ul {
+	padding-left: 1.25rem;
+	list-style: disc;
+}
+:is(.rendered-markdown, .markdown-body, .annotation-md) ol {
+	padding-left: 1.25rem;
+	list-style: decimal;
+}
+:is(.rendered-markdown, .markdown-body, .annotation-md) code {
+	border-radius: 0.3rem;
+	background: var(--code-bg);
+	padding: 0.1rem 0.3rem;
+}
+:is(.rendered-markdown, .markdown-body, .annotation-md) a {
+	color: var(--accent);
+	text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------ *
+ * @pierre/trees decoration classes (library-injected, light DOM).
+ * ------------------------------------------------------------------ */
+.tree-decoration {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+}
+.tree-badge {
+	border-radius: 999px;
+	padding: 0.05rem 0.4rem;
+	background: var(--accent-soft);
+	color: var(--accent);
+	font-size: 0.66rem;
+	font-weight: 600;
+}
+.tree-reviewed {
+	border: 0;
+	background: transparent;
+	color: var(--accent);
+	cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ *
+ * Inline diff annotations (built by @pierre/diffs renderAnnotation).
+ * Styled globally to match the original mechanism.
+ * ------------------------------------------------------------------ */
+.inline-annotation {
+	margin: 6px 0 8px;
+	padding: 10px 12px;
+	border-radius: 0.6rem;
 	border: 1px solid var(--border);
-	border-radius: 1.25rem;
-	background: var(--panel);
-	box-shadow: 0 24px 80px var(--shadow);
+	background: var(--surface);
+	color: var(--fg);
+	font: 13px/1.45 var(--font-sans);
+	text-align: left;
+}
+.inline-annotation.user {
+	border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+	background: var(--accent-soft);
+}
+.inline-annotation strong {
+	display: block;
+	margin-bottom: 4px;
+}
+.inline-annotation .recommendation {
+	margin-top: 4px;
+	color: var(--muted);
+}
+.inline-annotation :is(p, ul, ol) {
+	margin: 0;
+}
+.inline-annotation :is(ul, ol) {
+	padding-left: 1.35rem;
+}
+.inline-annotation ul {
+	list-style: disc;
+}
+.inline-annotation ol {
+	list-style: decimal;
+}
+.inline-annotation code {
+	border-radius: 0.3rem;
+	background: var(--code-bg);
+	padding: 0.1rem 0.25rem;
 }
 
-.eyebrow {
-	margin: 0 0 0.5rem;
-	color: var(--muted);
-	font-size: 0.8rem;
-	font-weight: 700;
-	letter-spacing: 0.08em;
-	text-transform: uppercase;
+/* ------------------------------------------------------------------ *
+ * Animations
+ * ------------------------------------------------------------------ */
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.review-scroll-flash {
+	animation: review-scroll-flash 0.9s ease-out;
+}
+@keyframes review-scroll-flash {
+	0%,
+	40% {
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
+	}
+	100% {
+		outline: 0 solid transparent;
+	}
 }

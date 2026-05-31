@@ -70,19 +70,19 @@
 			container.replaceChildren();
 			for (const file of visibleFiles) {
 				const section = document.createElement('section');
-				section.className = 'rendered-file';
+				section.className = 'rendered-file mb-4 scroll-mt-[5.5rem] overflow-clip rounded-xl border border-border bg-surface';
 				section.dataset.file = file.name;
 				container.append(section);
 
 				const header = document.createElement('div');
-				header.className = 'file-review-header';
+				header.className = 'file-review-header sticky top-[var(--topbar-height)] z-10 flex items-center justify-between gap-4 border-b border-border bg-surface px-3 py-2';
 				const title = document.createElement('button');
 				title.type = 'button';
-				title.className = 'file-collapse-toggle';
+				title.className = 'file-collapse-toggle min-w-0 truncate rounded-md border-0 bg-transparent px-1 py-0.5 text-left text-sm font-medium hover:bg-surface-hover';
 				title.textContent = `${reviewed.has(file.name) && !selectedFile ? '▸' : '▾'} ${file.name}`;
 				const toggle = document.createElement('button');
 				toggle.type = 'button';
-				toggle.className = `file-reviewed-toggle${reviewed.has(file.name) ? ' reviewed' : ''}`;
+				toggle.className = `file-reviewed-toggle whitespace-nowrap text-xs${reviewed.has(file.name) ? ' border-accent text-accent' : ''}`;
 				toggle.textContent = reviewed.has(file.name) ? 'Reviewed' : 'Mark reviewed';
 				header.append(title, toggle);
 				section.append(header);
@@ -90,7 +90,7 @@
 				const fileNotes = fileAnnotationsFor(file);
 				if (fileNotes.length > 0) {
 					const notes = document.createElement('div');
-					notes.className = 'file-annotations';
+					notes.className = 'file-annotations grid gap-2 border-b border-border p-3';
 					for (const annotation of fileNotes) notes.append(renderFileAnnotation(annotation));
 					section.append(notes);
 				}
@@ -165,16 +165,16 @@
 
 	function renderFileAnnotation(annotation: UserReviewAnnotation) {
 		const element = document.createElement('aside');
-		element.className = 'file-annotation';
+		element.className = 'file-annotation grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 rounded-lg border border-accent/35 bg-accent-soft p-2';
 		element.dataset.userAnnotationId = annotation.id;
 		const body = document.createElement('button');
 		body.type = 'button';
-		body.className = 'file-annotation-body';
+		body.className = 'file-annotation-body annotation-md block w-full min-w-0 border-0 bg-transparent p-0 text-left text-sm hover:bg-transparent';
 		body.innerHTML = renderMarkdown(annotation.body);
 		body.addEventListener('click', () => dispatch('editAnnotation', annotation));
 		const remove = document.createElement('button');
 		remove.type = 'button';
-		remove.className = 'file-annotation-remove';
+		remove.className = 'file-annotation-remove flex-none border-0 bg-transparent p-0 text-lg leading-none text-danger hover:bg-transparent';
 		remove.title = 'Delete annotation';
 		remove.textContent = '×';
 		remove.addEventListener('click', () => dispatch('deleteAnnotation', annotation));
@@ -422,132 +422,8 @@
 </script>
 
 {#if renderError}
-	<div class="render-error">Could not render diff: {renderError}</div>
+	<div class="mb-4 rounded-lg border border-danger/50 bg-danger-soft p-4 text-danger">Could not render diff: {renderError}</div>
 {/if}
 
-<div class="hint">Click a line number to add a review note.</div>
-<div class="diff-container" bind:this={container}></div>
-
-<style>
-	.diff-container {
-		display: grid;
-		gap: 1rem;
-	}
-
-	.hint {
-		margin-bottom: 0.75rem;
-		color: var(--muted);
-		font-size: 0.85rem;
-	}
-
-	:global(.rendered-file) {
-		scroll-margin-top: 5.5rem;
-		border: 1px solid var(--border);
-		border-radius: 1rem;
-		background: var(--panel-solid);
-		overflow: clip;
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.24);
-	}
-
-	:global(.file-review-header) {
-		position: sticky;
-		top: 4.25rem;
-		z-index: 4;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-		padding: 0.55rem 0.75rem;
-		border-bottom: 1px solid var(--border);
-		background: color-mix(in srgb, var(--panel-solid) 96%, transparent);
-	}
-
-	:global(.file-collapse-toggle), :global(.file-reviewed-toggle) {
-		border: 1px solid var(--border-strong);
-		border-radius: 0.5rem;
-		background: var(--panel-soft);
-		color: var(--text);
-		padding: 0.3rem 0.5rem;
-	}
-
-	:global(.file-collapse-toggle) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	:global(.file-reviewed-toggle.reviewed) { color: var(--accent); border-color: rgba(139, 211, 255, 0.45); }
-
-	:global(.file-annotations) {
-		display: grid;
-		gap: 0.5rem;
-		padding: 0.75rem;
-		border-bottom: 1px solid var(--border);
-	}
-
-	:global(.file-annotation) {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		align-items: start;
-		gap: 0.5rem;
-		border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-		border-radius: 0.75rem;
-		background: var(--accent-soft);
-		padding: 0.5rem;
-	}
-
-	:global(.file-annotation-body), :global(.file-annotation-remove) {
-		border: 0;
-		background: transparent;
-		color: var(--text);
-		text-align: left;
-		justify-content: flex-start;
-		align-items: flex-start;
-	}
-
-	:global(.file-annotation-body) { display: block; width: 100%; white-space: normal; overflow-wrap: anywhere; }
-	:global(.file-annotation-body p), :global(.inline-annotation p), :global(.inline-annotation ul), :global(.inline-annotation ol), :global(.file-annotation-body ul), :global(.file-annotation-body ol) { margin: 0; }
-	:global(.file-annotation-body ul), :global(.file-annotation-body ol), :global(.inline-annotation ul), :global(.inline-annotation ol) { padding-left: 1.35rem; }
-	:global(.file-annotation-body code), :global(.inline-annotation code) { border-radius: 0.3rem; background: var(--bg); padding: 0.1rem 0.25rem; }
-	:global(.file-annotation-remove) { color: var(--danger); font-size: 1.2rem; line-height: 1; }
-
-	:global(.inline-annotation) {
-		margin: 6px 0 8px;
-		padding: 10px 12px;
-		border-radius: 10px;
-		border: 1px solid var(--border);
-		background: color-mix(in srgb, var(--panel-solid) 92%, transparent);
-		color: var(--text);
-		font: 13px/1.45 ui-sans-serif, system-ui, sans-serif;
-		text-align: left;
-		justify-items: start;
-	}
-
-	:global(.inline-annotation.user) {
-		border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-		background: var(--accent-soft);
-	}
-
-	:global(.inline-annotation strong) {
-		display: block;
-		margin-bottom: 4px;
-	}
-
-	:global(.inline-annotation .recommendation) {
-		margin-top: 4px;
-		color: var(--muted);
-	}
-
-	:global(.review-scroll-flash) {
-		animation: review-scroll-flash 0.9s ease-out;
-	}
-
-	@keyframes review-scroll-flash {
-		0%, 40% { outline: 2px solid rgba(139, 211, 255, 0.95); outline-offset: -2px; }
-		100% { outline: 0 solid transparent; }
-	}
-
-	.render-error {
-		margin-bottom: 1rem;
-		padding: 1rem;
-		border: 1px solid rgba(255, 107, 122, 0.45);
-		border-radius: 0.75rem;
-		background: var(--danger-soft);
-		color: var(--danger);
-	}
-</style>
+<div class="mb-3 text-sm text-muted">Click a line number to add a review note.</div>
+<div class="grid gap-4" bind:this={container}></div>
