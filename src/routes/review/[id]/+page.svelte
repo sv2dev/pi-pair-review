@@ -6,7 +6,7 @@
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
 	import { Check, Clipboard, Edit3, FileText, HelpCircle, MessageSquarePlus, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, X, MoreVertical, BookOpenText } from '@lucide/svelte';
-	import type { ReviewFileSummary, ReviewFinding, ReviewSessionSnapshot, UserReviewAnnotation } from '$lib/shared/review';
+	import type { ReviewAttentionLevel, ReviewFileSummary, ReviewFinding, ReviewMode, ReviewSessionSnapshot, UserReviewAnnotation } from '$lib/shared/review';
 
 	let session: ReviewSessionSnapshot | undefined;
 	let error: string | undefined;
@@ -46,6 +46,9 @@
 	$: files = session?.files ?? [];
 	$: findings = session?.preReview.findings ?? [];
 	$: hunkRanks = session?.preReview.hunks ?? [];
+	$: reviewLevelOptions = availableReviewLevelOptions(hunkRanks);
+	$: currentReviewMode = reviewLevelOptions.find((option) => option.level === Number(reviewLevel)) ?? reviewModeOption(modeForLevel(reviewLevel), reviewLevel);
+	$: if (session?.preReview.status === 'done' && reviewLevelOptions.length > 0 && !reviewLevelOptions.some((option) => option.level === Number(reviewLevel))) reviewLevel = reviewLevelOptions[0]!.level;
 	$: visibleFiles = sortFilesForTree(filterFilesForReviewLevel(files, hunkRanks, reviewLevel));
 	$: userAnnotations = session?.userAnnotations ?? [];
 	$: counts = annotationCounts(visibleFiles, findings, userAnnotations);
@@ -55,7 +58,7 @@
 	$: selectedAgentModel = session?.agentReview.models.find((model) => model.key === agentModelKey);
 	$: if (selectedAgentModel && !selectedAgentModel.thinkingLevels.includes(agentThinkingLevel as never)) agentThinkingLevel = selectedAgentModel.thinkingLevels[0] ?? 'off';
 	$: if (agentDefaultsSessionId) persistReviewSettings();
-	$: if (session && autoReviewArmed && autoStartedSessionId !== session.id && session.preReview.status === 'idle' && agentModelKey) {
+	$: if (session && autoReviewArmed && autoStartedSessionId !== session.id && session.preReview.status !== 'running' && agentModelKey) {
 		autoStartedSessionId = session.id;
 		autoReviewArmed = false;
 		void runAgentReview();
@@ -104,7 +107,7 @@
 		autoReviewArmed = autoReview;
 		const storedReviewLevel = Number(stored.reviewLevel);
 		reviewLevel = Number.isFinite(storedReviewLevel) && storedReviewLevel >= 1 && storedReviewLevel <= 5 ? storedReviewLevel : 1;
-		isolatedLevel = stored.isolatedLevel ?? false;
+		isolatedLevel = stored.isolatedLevel ?? true;
 	}
 
 	function persistReviewSettings() {
@@ -245,12 +248,12 @@
 		}
 		if (event.key === '+' || event.key === '=' || event.key === 'ArrowRight') {
 			event.preventDefault();
-			reviewLevel = Math.min(5, Number(reviewLevel) + 1);
+			stepReviewLevel(1);
 			return;
 		}
 		if (event.key === '-' || event.key === 'ArrowLeft') {
 			event.preventDefault();
-			reviewLevel = Math.max(1, Number(reviewLevel) - 1);
+			stepReviewLevel(-1);
 			return;
 		}
 		if (event.key.toLowerCase() === 'i') {
@@ -332,6 +335,35 @@
 
 	function severityClass(finding: ReviewFinding) {
 		return `severity-${finding.severity}`;
+	}
+
+	function stepReviewLevel(direction: 1 | -1) {
+		const options = reviewLevelOptions.length > 0 ? reviewLevelOptions.map((option) => option.level) : [1, 2, 3, 4, 5];
+		const index = Math.max(0, options.indexOf(Number(reviewLevel) as ReviewAttentionLevel));
+		reviewLevel = options[Math.min(options.length - 1, Math.max(0, index + direction))] ?? reviewLevel;
+	}
+
+	function availableReviewLevelOptions(ranks: typeof hunkRanks) {
+		const levels = ranks.length > 0 ? [...new Set(ranks.map((rank) => rank.attentionLevel))].sort((left, right) => left - right) : [1, 2, 3, 4, 5] as ReviewAttentionLevel[];
+		return levels.map((level) => {
+			const levelRanks = ranks.filter((rank) => rank.attentionLevel === level);
+			return { ...reviewModeOption(levelRanks[0]?.mode ?? modeForLevel(level), level), count: levelRanks.length };
+		});
+	}
+
+	function modeForLevel(level: number): ReviewMode {
+		return level === 1 ? 'deep-focus' : level === 2 ? 'careful' : level === 3 ? 'standard' : level === 4 ? 'glance' : 'background';
+	}
+
+	function reviewModeOption(mode: ReviewMode, level = 1) {
+		const data: Record<ReviewMode, { label: string; description: string }> = {
+			'deep-focus': { label: 'Deep focus', description: 'Highest-risk correctness, security, data, and contract changes' },
+			careful: { label: 'Careful', description: 'Important domain, API, or large implementation changes' },
+			standard: { label: 'Standard', description: 'Normal implementation review' },
+			glance: { label: 'Glance', description: 'Quick check for style-only or low-risk UI changes' },
+			background: { label: 'Background', description: 'Generated, docs, fixtures, snapshots, and other low-signal changes' }
+		};
+		return { level: Number(level) as ReviewAttentionLevel, mode, ...data[mode] };
 	}
 
 	function filterFilesForReviewLevel(files: ReviewFileSummary[], ranks: typeof hunkRanks, level: number) {
@@ -446,9 +478,22 @@
 							{#if session.preReview.status === 'done' && session.preReview.summary}<button class="w-9 px-0" title="Show summary (S)" on:click={() => (summaryDialog = true)}><BookOpenText size={15} /></button>{/if}
 						</div>
 						{#if session.preReview.status === 'done'}
-							<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Review depth</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">Level {reviewLevel}/5</span></div>
-							<input title="Review depth (+/-)" type="range" min="1" max="5" step="1" bind:value={reviewLevel} class="w-full" />
-							<label class="flex items-center gap-2 text-sm text-muted" title="Toggle isolated review level (I)"><input type="checkbox" bind:checked={isolatedLevel} /> Isolated level</label>
+							<div class="grid gap-2">
+								<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Review mode</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{currentReviewMode.label}</span></div>
+								{#if reviewLevelOptions.length <= 1}
+									<p class="rounded-lg border border-border bg-surface-2 p-2 text-sm text-muted"><strong class="text-fg">{currentReviewMode.label}</strong> · {currentReviewMode.description}</p>
+								{:else}
+									<div class="grid gap-1.5" title="Review mode (+/-)">
+										{#each reviewLevelOptions as option}
+											<label class="flex cursor-pointer items-start gap-2 rounded-lg border p-2 text-sm hover:bg-surface-hover {(isolatedLevel ? option.level === Number(reviewLevel) : option.level <= Number(reviewLevel)) ? 'border-accent bg-accent-soft' : 'border-border bg-surface-2'}">
+												<input type="radio" name="review-level" value={option.level} bind:group={reviewLevel} />
+												<span class="grid min-w-0 gap-0.5"><span class="font-medium text-fg">{option.label} <span class="text-xs font-normal text-muted">({option.count})</span></span><span class="text-xs text-muted">{option.description}</span></span>
+											</label>
+										{/each}
+									</div>
+								{/if}
+								<label class="flex items-center gap-2 text-sm text-muted" title="Toggle isolated review mode (I)"><input type="checkbox" bind:checked={isolatedLevel} /> Isolate selected mode</label>
+							</div>
 						{:else}
 							<p class="text-sm text-muted">{session.preReview.status === 'idle' ? 'Run agent review from model settings.' : 'Ranking hunks…'}</p>
 						{/if}

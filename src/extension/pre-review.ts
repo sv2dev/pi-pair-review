@@ -1,6 +1,6 @@
 import { completeSimple, type Model, type UserMessage } from '@earendil-works/pi-ai';
 import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
-import type { ReviewAttentionLevel, ReviewFinding, ReviewHunkRank, ReviewSeverity, ReviewThinkingLevel } from '../lib/shared/review.ts';
+import type { ReviewAttentionLevel, ReviewFinding, ReviewHunkRank, ReviewMode, ReviewSeverity, ReviewThinkingLevel } from '../lib/shared/review.ts';
 import { getReviewSession, markPreReviewDone, markPreReviewFailed, markPreReviewRunning } from './store.ts';
 import { trimPatchForModel } from './diff.ts';
 
@@ -64,8 +64,9 @@ export async function runPreReview(
 	const session = getReviewSession(sessionId);
 	if (!session) return;
 
-	const fallbackFindings = heuristicFindings(session.patch);
-	const fallbackHunks = buildHunkRanks(session.patch, fallbackFindings);
+	const fallback = buildHeuristicPreReview(session.patch);
+	const fallbackFindings = fallback.findings;
+	const fallbackHunks = fallback.hunks;
 
 	if (!model) {
 		markPreReviewFailed(sessionId, 'No model selected; showing heuristic highlights only.', fallbackFindings, fallbackHunks);
@@ -184,6 +185,12 @@ function extractJson(text: string): string {
 	return text;
 }
 
+export function buildHeuristicPreReview(patch: string): { findings: ReviewFinding[]; hunks: ReviewHunkRank[]; summary: string } {
+	const findings = heuristicFindings(patch);
+	const hunks = buildHunkRanks(patch, findings);
+	return { findings, hunks, summary: summarizeHeuristicReview(hunks) };
+}
+
 function heuristicFindings(patch: string): ReviewFinding[] {
 	const findings: ReviewFinding[] = [];
 	let currentFile = '';
@@ -229,13 +236,14 @@ function heuristicFindings(patch: string): ReviewFinding[] {
 
 function buildHunkRanks(patch: string, findings: ReviewFinding[], modelRanks: Partial<ReviewHunkRank>[] = []): ReviewHunkRank[] {
 	const hunks = parsePatchHunks(patch);
-	const ranks: ReviewHunkRank[] = hunks.map((hunk) => ({ ...hunk, attentionLevel: heuristicHunkLevel(hunk) }));
+	const ranks: ReviewHunkRank[] = hunks.map(({ lines, ...hunk }) => ({ ...hunk, ...classifyHunk({ ...hunk, lines }) }));
 
 	for (const modelRank of modelRanks) {
 		const match = ranks.find((hunk) => hunk.file === modelRank.file && hunk.oldStart === modelRank.oldStart && hunk.newStart === modelRank.newStart);
 		if (!match || !modelRank.attentionLevel) continue;
 		match.attentionLevel = modelRank.attentionLevel;
-		match.reason = modelRank.reason;
+		match.mode = reviewModeForLevel(modelRank.attentionLevel);
+		match.reason = modelRank.reason ?? match.reason;
 	}
 
 	for (const finding of findings) {
@@ -249,6 +257,7 @@ function buildHunkRanks(patch: string, findings: ReviewFinding[], modelRanks: Pa
 		for (const hunk of matching) {
 			if (finding.attentionLevel < hunk.attentionLevel) {
 				hunk.attentionLevel = finding.attentionLevel;
+				hunk.mode = reviewModeForLevel(finding.attentionLevel);
 				hunk.reason = finding.title;
 			}
 		}
@@ -258,24 +267,22 @@ function buildHunkRanks(patch: string, findings: ReviewFinding[], modelRanks: Pa
 }
 
 function normalizeHunkRankScale(ranks: ReviewHunkRank[]): ReviewHunkRank[] {
-	if (ranks.length === 0) return ranks;
-	const minimum = Math.min(...ranks.map((rank) => rank.attentionLevel));
-	if (minimum <= 1) return ranks;
-	return ranks.map((rank) => ({
-		...rank,
-		attentionLevel: Math.max(1, rank.attentionLevel - minimum + 1) as ReviewAttentionLevel
-	}));
+	const levels = [...new Set(ranks.map((rank) => rank.attentionLevel))].sort((left, right) => left - right);
+	const normalized = new Map(levels.map((level, index) => [level, (index + 1) as ReviewAttentionLevel]));
+	return ranks.map((rank) => ({ ...rank, attentionLevel: normalized.get(rank.attentionLevel) ?? rank.attentionLevel }));
 }
 
-function parsePatchHunks(patch: string): Omit<ReviewHunkRank, 'attentionLevel' | 'reason'>[] {
-	const hunks: Omit<ReviewHunkRank, 'attentionLevel' | 'reason'>[] = [];
+function parsePatchHunks(patch: string): Array<Omit<ReviewHunkRank, 'attentionLevel' | 'mode' | 'reason' | 'signals'> & { lines: string[] }> {
+	const hunks: Array<Omit<ReviewHunkRank, 'attentionLevel' | 'mode' | 'reason' | 'signals'> & { lines: string[] }> = [];
 	let currentFile = '';
 	let index = 0;
+	let currentHunk: (typeof hunks)[number] | undefined;
 
 	for (const line of patch.split('\n')) {
 		const header = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
 		if (header) {
 			currentFile = header[2] ?? header[1] ?? '';
+			currentHunk = undefined;
 			continue;
 		}
 
@@ -283,19 +290,17 @@ function parsePatchHunks(patch: string): Omit<ReviewHunkRank, 'attentionLevel' |
 		if (rename) currentFile = rename[1] ?? currentFile;
 
 		const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-		if (!hunk || !currentFile) continue;
-		const oldStart = Number(hunk[1]);
-		const oldLines = hunk[2] === undefined ? 1 : Number(hunk[2]);
-		const newStart = Number(hunk[3]);
-		const newLines = hunk[4] === undefined ? 1 : Number(hunk[4]);
-		hunks.push({
-			id: `hunk-${++index}`,
-			file: currentFile,
-			oldStart,
-			oldLines,
-			newStart,
-			newLines
-		});
+		if (hunk && currentFile) {
+			const oldStart = Number(hunk[1]);
+			const oldLines = hunk[2] === undefined ? 1 : Number(hunk[2]);
+			const newStart = Number(hunk[3]);
+			const newLines = hunk[4] === undefined ? 1 : Number(hunk[4]);
+			currentHunk = { id: `hunk-${++index}`, file: currentFile, oldStart, oldLines, newStart, newLines, lines: [] };
+			hunks.push(currentHunk);
+			continue;
+		}
+
+		if (currentHunk && !line.startsWith('diff --git ')) currentHunk.lines.push(line);
 	}
 
 	return hunks;
@@ -305,14 +310,78 @@ function lineInRange(line: number, start: number, length: number): boolean {
 	return length === 0 ? line === start : line >= start && line < start + length;
 }
 
-function heuristicHunkLevel(hunk: Omit<ReviewHunkRank, 'attentionLevel' | 'reason'>): ReviewAttentionLevel {
+function classifyHunk(hunk: Omit<ReviewHunkRank, 'attentionLevel' | 'mode' | 'reason' | 'signals'> & { lines: string[] }): Pick<ReviewHunkRank, 'attentionLevel' | 'mode' | 'reason' | 'signals'> {
 	const path = hunk.file.toLowerCase();
 	const churn = hunk.oldLines + hunk.newLines;
-	if (/auth|security|permission|migration|schema|payment|credential|token|secret/.test(path)) return 1;
-	if (/test|spec|fixture|snapshot|readme|docs?\//.test(path)) return 5;
-	if (churn > 80) return 2;
-	if (churn > 30) return 3;
-	return 4;
+	const changed = hunk.lines.filter((line) => (line.startsWith('+') && !line.startsWith('+++ ')) || (line.startsWith('-') && !line.startsWith('--- '))).map((line) => line.slice(1).trim());
+	const signals: string[] = [];
+	let level: ReviewAttentionLevel = 4;
+	let reason = 'Small implementation change';
+
+	if (isGeneratedPath(path)) {
+		signals.push('generated');
+		level = 5;
+		reason = 'Generated or low-signal file';
+	} else if (/auth|security|permission|policy|acl|rbac|payment|billing|credential|token|secret|session|crypto/.test(path)) {
+		signals.push('security-sensitive');
+		level = 1;
+		reason = 'Security, auth, credential, or payment-sensitive path';
+	} else if (/migration|schema|prisma|drizzle|typeorm|sequelize|database|\bsql\b|\.sql$/.test(path)) {
+		signals.push('data-model');
+		level = 1;
+		reason = 'Database schema or migration change';
+	} else if (/domain|model|entity|aggregate|contract|api|route|endpoint|validation|serializer|schema/.test(path)) {
+		signals.push('contract-or-domain');
+		level = 2;
+		reason = 'Domain model, API contract, or validation change';
+	} else if (isStyleOnly(path, hunk.lines, changed)) {
+		signals.push('style-only');
+		level = 4;
+		reason = 'Style or markup-class-only change';
+	} else if (/test|spec|fixture|snapshot|readme|docs?\//.test(path)) {
+		signals.push('test-or-docs');
+		level = 5;
+		reason = 'Tests, fixtures, snapshots, or documentation';
+	} else if (churn > 80) {
+		signals.push('large-change');
+		level = 2;
+		reason = 'Large hunk worth careful review';
+	} else if (churn > 30) {
+		signals.push('medium-change');
+		level = 3;
+		reason = 'Medium-sized hunk';
+	}
+
+	return { attentionLevel: level, mode: reviewModeForLevel(level), reason, signals };
+}
+
+function isGeneratedPath(path: string): boolean {
+	return /(^|\/)(dist|build|coverage|\.svelte-kit|\.next|\.nuxt|generated|\.generated)(\/|$)/.test(path) || /(?:^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|.*\.log|.*\.min\.(js|css)|.*\.snap)$/.test(path);
+}
+
+function isStyleOnly(path: string, hunkLines: string[], changed: string[]): boolean {
+	if (/\.(css|scss|sass|less|pcss|postcss)$/.test(path)) return true;
+	if (!/\.(svelte|vue|jsx|tsx|html)$/.test(path) || changed.length === 0) return false;
+	if (hunkLines.some((line) => /<\/?script\b/i.test(line))) return false;
+	return changed.every((line) =>
+		line === '' ||
+		/^class(Name)?=/.test(line) ||
+		/^style=/.test(line) ||
+		/^<\/?(div|span|section|main|header|footer|aside|button|a|p|ul|ol|li|label|input|form|nav)\b[^>{]*(class|style)=/.test(line) ||
+		/^[}\])]*$/.test(line)
+	);
+}
+
+function reviewModeForLevel(level: ReviewAttentionLevel): ReviewMode {
+	return level === 1 ? 'deep-focus' : level === 2 ? 'careful' : level === 3 ? 'standard' : level === 4 ? 'glance' : 'background';
+}
+
+function summarizeHeuristicReview(hunks: ReviewHunkRank[]): string {
+	if (hunks.length === 0) return 'No changed hunks detected.';
+	const counts = new Map<string, number>();
+	for (const hunk of hunks) for (const signal of hunk.signals ?? []) counts.set(signal, (counts.get(signal) ?? 0) + 1);
+	const highlights = [...counts.entries()].sort((left, right) => right[1] - left[1]).slice(0, 3).map(([signal, count]) => `${count} ${signal}`);
+	return `Deterministic review routing classified ${hunks.length} changed hunks${highlights.length ? ` (${highlights.join(', ')})` : ''}. Use the named review modes to focus on the eligible levels for this change.`;
 }
 
 function heuristicForAddedLine(file: string, line: number, content: string, index: number): ReviewFinding | undefined {

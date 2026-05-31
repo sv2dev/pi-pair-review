@@ -3,6 +3,7 @@ export type ReviewSide = 'additions' | 'deletions';
 export type PreReviewStatus = 'idle' | 'running' | 'done' | 'failed';
 export type ReviewThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 export type ReviewAttentionLevel = 1 | 2 | 3 | 4 | 5;
+export type ReviewMode = 'deep-focus' | 'careful' | 'standard' | 'glance' | 'background';
 export type UserReviewAnnotationScope = 'global' | 'file' | 'line';
 
 export interface ReviewFileSummary {
@@ -34,7 +35,9 @@ export interface ReviewHunkRank {
 	newStart: number;
 	newLines: number;
 	attentionLevel: ReviewAttentionLevel;
+	mode?: ReviewMode;
 	reason?: string;
+	signals?: string[];
 }
 
 export interface UserReviewAnnotation {
