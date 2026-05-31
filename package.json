@@ -32,7 +32,10 @@
     ]
   },
   "dependencies": {
-    "@pierre/diffs": "^1.2.4"
+    "@lucide/svelte": "^1.17.0",
+    "@pierre/diffs": "^1.2.4",
+    "@pierre/trees": "^1.0.0-beta.3",
+    "marked": "^18.0.4"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "*",

@@ -1,37 +1,74 @@
 :root {
-	color-scheme: dark;
+	color-scheme: light dark;
 	font-family:
 		Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-	background: #0d0f14;
-	color: #e7eaf0;
+	--bg: #f6f8fc;
+	--bg-radial: rgba(86, 112, 255, 0.12);
+	--text: #172033;
+	--muted: #5d6b85;
+	--panel: rgba(255, 255, 255, 0.9);
+	--panel-solid: #ffffff;
+	--panel-soft: #eef2f8;
+	--panel-hover: #e4eaf4;
+	--border: #d5ddeb;
+	--border-strong: #bdc8da;
+	--button: #f3f6fb;
+	--code-bg: #e8edf6;
+	--shadow: rgba(31, 41, 61, 0.14);
+	--accent: #1264a3;
+	--accent-soft: rgba(18, 100, 163, 0.14);
+	--danger: #c9364a;
+	--danger-soft: rgba(201, 54, 74, 0.12);
+	--warning: #946200;
+	--warning-soft: rgba(148, 98, 0, 0.14);
+	background: var(--bg);
+	color: var(--text);
 }
 
-* {
-	box-sizing: border-box;
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #0d0f14;
+		--bg-radial: rgba(86, 112, 255, 0.16);
+		--text: #e7eaf0;
+		--muted: #9aa6c1;
+		--panel: rgba(17, 21, 29, 0.86);
+		--panel-solid: #11151d;
+		--panel-soft: #151923;
+		--panel-hover: #202637;
+		--border: #293142;
+		--border-strong: #333c4f;
+		--button: #151923;
+		--code-bg: #202531;
+		--shadow: rgba(0, 0, 0, 0.35);
+		--accent: #8bd3ff;
+		--accent-soft: rgba(139, 211, 255, 0.16);
+		--danger: #ff6b7a;
+		--danger-soft: rgba(255, 107, 122, 0.14);
+		--warning: #ffd166;
+		--warning-soft: rgba(255, 209, 102, 0.16);
+	}
 }
+
+* { box-sizing: border-box; }
 
 body {
 	margin: 0;
 	min-height: 100vh;
 	background:
-		radial-gradient(circle at top left, rgba(86, 112, 255, 0.16), transparent 32rem),
-		#0d0f14;
+		radial-gradient(circle at top left, var(--bg-radial), transparent 32rem),
+		var(--bg);
 }
 
-a {
-	color: inherit;
-}
+a { color: inherit; }
 
 button,
-	input,
-	select {
-	font: inherit;
-}
+input,
+select { font: inherit; }
 
 code {
 	padding: 0.1rem 0.35rem;
 	border-radius: 0.35rem;
-	background: #202531;
+	background: var(--code-bg);
 }
 
 .landing {
@@ -44,15 +81,15 @@ code {
 .landing section {
 	max-width: 40rem;
 	padding: 2rem;
-	border: 1px solid #293142;
+	border: 1px solid var(--border);
 	border-radius: 1.25rem;
-	background: rgba(18, 22, 31, 0.86);
-	box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+	background: var(--panel);
+	box-shadow: 0 24px 80px var(--shadow);
 }
 
 .eyebrow {
 	margin: 0 0 0.5rem;
-	color: #9aa6c1;
+	color: var(--muted);
 	font-size: 0.8rem;
 	font-weight: 700;
 	letter-spacing: 0.08em;

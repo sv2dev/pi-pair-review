@@ -1,31 +1,45 @@
 import type { ReviewFileSummary } from '../lib/shared/review.ts';
 
-export interface DiffSelection {
-	patch: string;
+export interface DiffCommand {
+	command: string[];
 	baseDescription: string;
+	mode: 'unstaged' | 'staged' | 'uncommitted' | 'branch';
+	base?: string;
 }
 
-export function buildDiffCommand(args: string): { command: string[]; baseDescription: string } {
+export function buildDiffCommand(args: string): DiffCommand {
 	const tokens = splitArgs(args.trim());
+	const readValue = (...names: string[]) => {
+		for (const name of names) {
+			const index = tokens.indexOf(name);
+			if (index >= 0 && tokens[index + 1] && !tokens[index + 1]!.startsWith('-')) return tokens[index + 1];
+			const prefixed = tokens.find((token) => token.startsWith(`${name}=`));
+			if (prefixed) return prefixed.slice(name.length + 1);
+		}
+		return undefined;
+	};
+
+	const common = ['git', 'diff', '--no-ext-diff', '--find-renames', '--src-prefix=a/', '--dst-prefix=b/'];
+
 	if (tokens.includes('--staged') || tokens.includes('--cached')) {
-		return {
-			command: ['git', 'diff', '--cached', '--no-ext-diff', '--find-renames', '--src-prefix=a/', '--dst-prefix=b/'],
-			baseDescription: 'staged changes'
-		};
+		return { command: [...common, '--cached'], baseDescription: 'staged changes', mode: 'staged' };
+	}
+
+	if (tokens.includes('--uncommitted') || tokens.includes('--all')) {
+		return { command: [...common, 'HEAD'], baseDescription: 'uncommitted changes', mode: 'uncommitted' };
+	}
+
+	if (tokens.includes('--branch')) {
+		const base = readValue('--branch', '--base', '--target') ?? 'main';
+		return { command: [...common, `${base}...HEAD`], baseDescription: `${base}...HEAD`, mode: 'branch', base };
 	}
 
 	const base = tokens.find((token) => !token.startsWith('-'));
 	if (base) {
-		return {
-			command: ['git', 'diff', '--no-ext-diff', '--find-renames', '--src-prefix=a/', '--dst-prefix=b/', `${base}...HEAD`],
-			baseDescription: `${base}...HEAD`
-		};
+		return { command: [...common, `${base}...HEAD`], baseDescription: `${base}...HEAD`, mode: 'branch', base };
 	}
 
-	return {
-		command: ['git', 'diff', '--no-ext-diff', '--find-renames', '--src-prefix=a/', '--dst-prefix=b/'],
-		baseDescription: 'working tree changes'
-	};
+	return { command: common, baseDescription: 'unstaged changes', mode: 'unstaged' };
 }
 
 export function summarizePatchFiles(patch: string): ReviewFileSummary[] {
@@ -73,5 +87,5 @@ export function trimPatchForModel(patch: string, maxChars = 80_000): string {
 function splitArgs(input: string): string[] {
 	if (!input) return [];
 	const matches = input.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
-	return matches.map((token) => token.replace(/^['"]|['"]$/g, ''));
+	return matches.map((token) => token.replace(/^["']|["']$/g, ''));
 }

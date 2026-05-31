@@ -1,6 +1,9 @@
 export type ReviewSeverity = 'critical' | 'high' | 'medium' | 'low';
 export type ReviewSide = 'additions' | 'deletions';
 export type PreReviewStatus = 'idle' | 'running' | 'done' | 'failed';
+export type ReviewThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type ReviewAttentionLevel = 1 | 2 | 3 | 4 | 5;
+export type UserReviewAnnotationScope = 'global' | 'file' | 'line';
 
 export interface ReviewFileSummary {
 	path: string;
@@ -13,13 +16,43 @@ export interface ReviewFileSummary {
 export interface ReviewFinding {
 	id: string;
 	severity: ReviewSeverity;
+	attentionLevel: ReviewAttentionLevel;
 	title: string;
-	file: string;
+	file?: string;
 	line?: number;
 	side?: ReviewSide;
 	rationale: string;
 	recommendation?: string;
 	source: 'agent' | 'heuristic';
+}
+
+export interface ReviewHunkRank {
+	id: string;
+	file: string;
+	oldStart: number;
+	oldLines: number;
+	newStart: number;
+	newLines: number;
+	attentionLevel: ReviewAttentionLevel;
+	reason?: string;
+}
+
+export interface UserReviewAnnotation {
+	id: string;
+	scope: UserReviewAnnotationScope;
+	file?: string;
+	line?: number;
+	side?: ReviewSide;
+	body: string;
+	createdAt: string;
+}
+
+export interface ReviewAgentModelOption {
+	key: string;
+	provider: string;
+	id: string;
+	name: string;
+	thinkingLevels: ReviewThinkingLevel[];
 }
 
 export interface ReviewSessionSnapshot {
@@ -30,13 +63,21 @@ export interface ReviewSessionSnapshot {
 	baseDescription: string;
 	patch: string;
 	files: ReviewFileSummary[];
+	userAnnotations: UserReviewAnnotation[];
+	agentReview: {
+		models: ReviewAgentModelOption[];
+		defaultModelKey?: string;
+		defaultThinkingLevel: ReviewThinkingLevel;
+	};
 	preReview: {
 		status: PreReviewStatus;
 		model?: string;
 		startedAt?: string;
 		finishedAt?: string;
 		error?: string;
+		summary?: string;
 		findings: ReviewFinding[];
+		hunks: ReviewHunkRank[];
 	};
 }
 
@@ -46,4 +87,7 @@ export interface ReviewSessionCreateInput {
 	baseDescription: string;
 	patch: string;
 	files: ReviewFileSummary[];
+	agentReview: ReviewSessionSnapshot['agentReview'];
+	onFeedback?: (feedback: string) => void;
+	onAgentReview?: (input: { modelKey: string; thinkingLevel: ReviewThinkingLevel; suggestComments: boolean }) => void;
 }
