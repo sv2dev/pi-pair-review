@@ -175,7 +175,7 @@ function buildFeedback(session: ReviewSessionSnapshot | undefined): string {
 	const lines: string[] = [];
 	for (const finding of session.preReview.findings) lines.push(formatFeedbackLine(finding.file, finding.line, finding.title));
 	for (const annotation of session.userAnnotations) lines.push(formatFeedbackLine(annotation.file, annotation.line, annotation.body));
-	return lines.length > 0 ? lines.join('\n') : '- No feedback entries.';
+	return lines.join('\n');
 }
 
 function formatFeedbackLine(file: string | undefined, line: number | undefined, body: string): string {
