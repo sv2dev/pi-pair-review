@@ -61,8 +61,9 @@
 	$: visibleFiles = sortFilesForTree(filterFilesForReviewLevel(files, hunkRanks, reviewLevel));
 	$: userAnnotations = session?.userAnnotations ?? [];
 	$: counts = annotationCounts(visibleFiles, findings, userAnnotations);
-	$: reviewProgress = files.length ? Math.round((reviewed.size / files.length) * 100) : 0;
-	$: allFilesReviewed = files.length > 0 && reviewed.size >= files.length;
+	$: reviewedFileCount = files.filter((file) => reviewed.has(file.path)).length;
+	$: reviewProgress = files.length ? Math.round((reviewedFileCount / files.length) * 100) : 0;
+	$: allFilesReviewed = files.length > 0 && reviewedFileCount >= files.length;
 	$: feedbackText = buildFeedback();
 	$: if (session && restoredSessionId !== session.id) restoreReviewed(session.id);
 	$: if (session && diffSourceSessionId !== session.id) restoreDiffSource(session);
@@ -142,12 +143,12 @@
 	}
 
 	function toggleReviewed(file: string) {
-		const wasComplete = files.length > 0 && reviewed.size >= files.length;
+		const wasComplete = allFilesReviewed;
 		const next = new Set(reviewed);
 		if (next.has(file)) next.delete(file);
 		else next.add(file);
 		reviewed = next;
-		if (!wasComplete && files.length > 0 && reviewed.size >= files.length) celebrateCompletion();
+		if (!wasComplete && files.length > 0 && files.every((item) => next.has(item.path))) celebrateCompletion();
 		if (session) localStorage.setItem(`pi-pair-review:${session.id}:reviewed`, JSON.stringify([...reviewed]));
 	}
 
@@ -580,7 +581,7 @@
 				{#if diffSourceError}<p class="text-sm text-danger">{diffSourceError}</p>{/if}
 			</section>
 			<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
-				<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{reviewed.size}/{files.length}</span></div>
+				<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{reviewedFileCount}/{files.length}</span></div>
 				<FileTreeViewer files={visibleFiles} {selectedFile} {activeFile} {reviewed} {counts} on:select={(event) => (selectedFile = event.detail)} on:toggleReviewed={(event) => toggleReviewed(event.detail)} />
 			</section>
 		</aside>

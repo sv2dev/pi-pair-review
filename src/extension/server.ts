@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, normalize } from 'node:path';
+import { dirname, extname, join, normalize, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -154,7 +154,8 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 		void (async () => {
 			const path = url.searchParams.get('path') ?? '';
 			const normalized = normalize(path);
-			if (!normalized.startsWith(tmpdir()) || !existsSync(normalized)) {
+			const tempRoot = normalize(tmpdir());
+			if (!(normalized === tempRoot || normalized.startsWith(`${tempRoot}${sep}`)) || !existsSync(normalized)) {
 				writeJson(res, 404, { error: 'Attachment not found' });
 				return;
 			}
