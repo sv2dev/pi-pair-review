@@ -21,3 +21,5 @@ Commands:
 - `/pair-review --branch <base>`, `/pair-review --base <base>`, or `/pair-review <base>` — review `<base>...HEAD`
 
 The web UI opens immediately. Click **Run** in the agent annotations panel to start an agent review with the selected model and thinking level. Click line numbers to add your own annotations; click **Insert feedback** or close the review page to insert the collected user feedback into Pi's input editor and close the review app.
+
+This is a test

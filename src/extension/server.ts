@@ -9,6 +9,7 @@ import type { AddressInfo } from 'node:net';
 import { addUserAnnotation, finishReview, getReviewFeedback, getReviewSession, isReviewFinished, removeReviewFinding, removeUserAnnotation, reviewListenerCount, startAgentReview, subscribeToReviewSession, updateUserAnnotation } from './store.ts';
 
 type SvelteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
+type WebHandler = { handler?: SvelteHandler; close?: () => Promise<void> | void; dev?: boolean };
 
 export interface ReviewWebServer {
 	origin: string;
@@ -31,10 +32,10 @@ export async function closeReviewWebServer(): Promise<void> {
 }
 
 async function startReviewWebServer(): Promise<ReviewWebServer> {
-	const svelteHandler = await loadSvelteHandler();
+	const webHandler = await loadWebHandler();
 
 	const server = createServer((req, res) => {
-		void handleRequest(req, res, svelteHandler);
+		void handleRequest(req, res, webHandler.handler);
 	});
 
 	await new Promise<void>((resolve, reject) => {
@@ -51,10 +52,12 @@ async function startReviewWebServer(): Promise<ReviewWebServer> {
 	return {
 		origin,
 		urlForReview: (id) => `${origin}/review/${id}`,
-		close: () =>
-			new Promise((resolve, reject) => {
+		close: async () => {
+			await new Promise<void>((resolve, reject) => {
 				server.close((error) => (error ? reject(error) : resolve()));
-			})
+			});
+			await webHandler.close?.();
+		}
 	};
 }
 
@@ -223,16 +226,34 @@ function handleEvents(id: string, res: ServerResponse): void {
 		unsubscribe();
 		setTimeout(() => {
 			if (!isReviewFinished(id) && reviewListenerCount(id) === 0) finishReview(id);
-		}, 750);
+		}, 400);
 	});
 }
 
-async function loadSvelteHandler(): Promise<SvelteHandler | undefined> {
+async function loadWebHandler(): Promise<WebHandler> {
 	const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+	if (process.env.PI_PAIR_REVIEW_DEV === '1') {
+		try {
+			const { createServer: createViteServer } = await import('vite');
+			const vite = await createViteServer({
+				root,
+				server: { middlewareMode: true },
+				appType: 'custom'
+			});
+			return {
+				dev: true,
+				handler: (req, res) => vite.middlewares(req, res, () => writeHtml(res, 404, 'Not found')),
+				close: () => vite.close()
+			};
+		} catch {
+			// Fall back to the built SvelteKit handler below.
+		}
+	}
+
 	const handlerPath = `${root}/build/handler.js`;
-	if (!existsSync(handlerPath)) return undefined;
+	if (!existsSync(handlerPath)) return {};
 	const mod = (await import(pathToFileURL(handlerPath).href)) as { handler?: SvelteHandler };
-	return mod.handler;
+	return { handler: mod.handler };
 }
 
 function writeJson(res: ServerResponse, status: number, value: unknown): void {
