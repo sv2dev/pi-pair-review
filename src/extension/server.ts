@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { existsSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join } from 'node:path';
+import { dirname, extname, join, normalize } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -147,6 +147,22 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 			});
 			writeJson(res, 200, getReviewSession(id) ?? { ok: true });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
+		return;
+	}
+
+	if (req.method === 'GET' && tail === 'attachments') {
+		void (async () => {
+			const path = url.searchParams.get('path') ?? '';
+			const normalized = normalize(path);
+			if (!normalized.startsWith(tmpdir()) || !existsSync(normalized)) {
+				writeJson(res, 404, { error: 'Attachment not found' });
+				return;
+			}
+			const extension = extname(normalized).toLowerCase();
+			const contentType = extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : extension === '.gif' ? 'image/gif' : extension === '.webp' ? 'image/webp' : 'image/png';
+			res.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-cache' });
+			res.end(await readFile(normalized));
+		})().catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
 	}
 

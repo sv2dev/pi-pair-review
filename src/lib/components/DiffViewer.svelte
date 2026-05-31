@@ -20,7 +20,7 @@
 	export let reviewed = new Set<string>();
 	export let isolatedLevel = false;
 
-	const dispatch = createEventDispatcher<{ annotate: { file: string; line: number; side: 'additions' | 'deletions' }; toggleReviewed: string; editAnnotation: UserReviewAnnotation; deleteAnnotation: UserReviewAnnotation }>();
+	const dispatch = createEventDispatcher<{ annotate: { file: string; line: number; side: 'additions' | 'deletions' }; toggleReviewed: string; fileComment: string; editAnnotation: UserReviewAnnotation; deleteAnnotation: UserReviewAnnotation; activeChange: { file?: string; commentId?: string } }>();
 
 	let container: HTMLDivElement;
 	let mounted = false;
@@ -29,6 +29,9 @@
 	let instances: FileDiffInstance<RenderAnnotation>[] = [];
 	let modulePromise: Promise<typeof import('@pierre/diffs')> | undefined;
 	let prefersDark = true;
+	let activeFile: string | undefined;
+	let activeCommentId: string | undefined;
+	let scrollTimer: number | undefined;
 
 	$: renderKey = `${session.id}:${session.patch.length}:${findings.map((finding) => finding.id).join(',')}:${session.userAnnotations.map((annotation) => annotation.id).join(',')}:${selectedFile ?? '*'}:${reviewLevel}:${isolatedLevel}:${[...reviewed].join(',')}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.attentionLevel}`).join(',')}:${diffStyle}:${wrap}`;
 	$: hunkFilterKey = `${reviewLevel}:${isolatedLevel}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.attentionLevel}`).join(',')}:${selectedFile ?? '*'}`;
@@ -47,8 +50,11 @@
 		};
 		media.addEventListener('change', updateTheme);
 		void renderDiffs();
+		window.addEventListener('scroll', onScroll, { passive: true });
 		return () => {
 			media.removeEventListener('change', updateTheme);
+			window.removeEventListener('scroll', onScroll);
+			if (scrollTimer) window.clearTimeout(scrollTimer);
 			cleanup();
 		};
 	});
@@ -70,7 +76,7 @@
 			container.replaceChildren();
 			for (const file of visibleFiles) {
 				const section = document.createElement('section');
-				section.className = 'rendered-file mb-4 scroll-mt-[5.5rem] overflow-clip rounded-xl border border-border bg-surface';
+				section.className = 'rendered-file mb-2 scroll-mt-[5.5rem] overflow-clip rounded-xl border border-border bg-surface';
 				section.dataset.file = file.name;
 				container.append(section);
 
@@ -78,13 +84,20 @@
 				header.className = 'file-review-header sticky top-[var(--topbar-height)] z-10 flex items-center justify-between gap-4 border-b border-border bg-surface px-3 py-2';
 				const title = document.createElement('button');
 				title.type = 'button';
-				title.className = 'file-collapse-toggle min-w-0 truncate rounded-md border-0 bg-transparent px-1 py-0.5 text-left text-sm font-medium hover:bg-surface-hover';
+				title.className = 'file-collapse-toggle min-w-0 justify-start truncate rounded-md border-0 bg-transparent px-1 py-0.5 text-left text-sm font-medium hover:bg-surface-hover';
 				title.textContent = `${reviewed.has(file.name) && !selectedFile ? '▸' : '▾'} ${file.name}`;
+				const actions = document.createElement('div');
+				actions.className = 'flex flex-none items-center gap-2';
+				const comment = document.createElement('button');
+				comment.type = 'button';
+				comment.className = 'whitespace-nowrap text-xs';
+				comment.textContent = 'Comment file';
 				const toggle = document.createElement('button');
 				toggle.type = 'button';
 				toggle.className = `file-reviewed-toggle whitespace-nowrap text-xs${reviewed.has(file.name) ? ' border-accent text-accent' : ''}`;
 				toggle.textContent = reviewed.has(file.name) ? 'Reviewed' : 'Mark reviewed';
-				header.append(title, toggle);
+				actions.append(comment, toggle);
+				header.append(title, actions);
 				section.append(header);
 
 				const fileNotes = fileAnnotationsFor(file);
@@ -103,6 +116,7 @@
 					diffHost.hidden = !diffHost.hidden;
 					title.textContent = `${diffHost.hidden ? '▸' : '▾'} ${file.name}`;
 				});
+				comment.addEventListener('click', () => dispatch('fileComment', file.name));
 				toggle.addEventListener('click', () => dispatch('toggleReviewed', file.name));
 
 				const instance = new FileDiff<RenderAnnotation>({
@@ -130,8 +144,85 @@
 			}
 			void applyHunkVisibility();
 			if (targetFindingId) void scrollToFinding(targetFindingId);
+			updateActiveFromScroll();
 		} catch (error) {
 			renderError = error instanceof Error ? error.message : String(error);
+		}
+	}
+
+	export function scrollFile(direction: 1 | -1) {
+		const sections = visibleFileSections();
+		scrollToNextElement(sections, direction, 'start');
+	}
+
+	export function scrollComment(direction: 1 | -1) {
+		scrollToNextElement(commentElements(), direction, 'center');
+	}
+
+	export function scrollHunk(direction: 1 | -1) {
+		scrollToNextElement(hunkElements(), direction, 'start');
+	}
+
+	export function editActiveComment() {
+		if (!activeCommentId) return false;
+		const annotation = session.userAnnotations.find((candidate) => candidate.id === activeCommentId);
+		if (!annotation) return false;
+		dispatch('editAnnotation', annotation);
+		return true;
+	}
+
+	export function currentFile() {
+		return activeFile;
+	}
+
+	function scrollToNextElement(elements: HTMLElement[], direction: 1 | -1, block: ScrollLogicalPosition) {
+		if (elements.length === 0) return;
+		const threshold = window.scrollY + (direction > 0 ? 96 : 0);
+		const positions = elements.map((element) => ({ element, top: element.getBoundingClientRect().top + window.scrollY })).sort((left, right) => left.top - right.top);
+		const next = direction > 0 ? positions.find((item) => item.top > threshold + 8) ?? positions[0] : [...positions].reverse().find((item) => item.top < threshold - 8) ?? positions.at(-1);
+		next?.element.scrollIntoView({ block, behavior: 'smooth' });
+	}
+
+	function visibleFileSections() {
+		return [...container.querySelectorAll<HTMLElement>('.rendered-file')].filter((element) => !element.hidden);
+	}
+
+	function commentElements() {
+		const light = [...container.querySelectorAll<HTMLElement>('[data-user-annotation-id], [data-finding-id]')];
+		const shadow = diffHosts().flatMap((host) => [...(host.shadowRoot?.querySelectorAll<HTMLElement>('[data-user-annotation-id], [data-finding-id]') ?? [])]);
+		return [...light, ...shadow].filter((element) => element.offsetParent !== null || !!element.getClientRects().length);
+	}
+
+	function hunkElements() {
+		return diffHosts().flatMap((host) => [...(host.shadowRoot?.querySelectorAll<HTMLElement>('[data-separator]') ?? [])]);
+	}
+
+	function onScroll() {
+		if (scrollTimer) window.clearTimeout(scrollTimer);
+		scrollTimer = window.setTimeout(updateActiveFromScroll, 80);
+	}
+
+	function updateActiveFromScroll() {
+		if (!container) return;
+		const anchor = window.scrollY + Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-height')) + 24;
+		const sections = visibleFileSections().map((element) => ({ element, top: element.getBoundingClientRect().top + window.scrollY })).filter((item) => item.top <= anchor).sort((left, right) => right.top - left.top);
+		const nextFile = sections[0]?.element.dataset.file ?? visibleFileSections()[0]?.dataset.file;
+		const comments = commentElements().map((element) => ({ element, top: element.getBoundingClientRect().top + window.scrollY, id: element.dataset.userAnnotationId ?? element.dataset.findingId })).filter((item) => item.id && item.top <= anchor + 140).sort((left, right) => right.top - left.top);
+		const nextCommentId = comments[0]?.id;
+		if (nextFile === activeFile && nextCommentId === activeCommentId) return;
+		activeFile = nextFile;
+		activeCommentId = nextCommentId;
+		markActiveElements();
+		dispatch('activeChange', { file: activeFile, commentId: activeCommentId });
+	}
+
+	function markActiveElements() {
+		for (const element of container.querySelectorAll<HTMLElement>('.review-active-file, .review-active-comment')) element.classList.remove('review-active-file', 'review-active-comment');
+		for (const host of diffHosts()) for (const element of host.shadowRoot?.querySelectorAll<HTMLElement>('.review-active-comment') ?? []) element.classList.remove('review-active-comment');
+		if (activeFile) container.querySelector<HTMLElement>(`[data-file="${CSS.escape(activeFile)}"]`)?.classList.add('review-active-file');
+		if (activeCommentId) {
+			container.querySelector<HTMLElement>(`[data-user-annotation-id="${CSS.escape(activeCommentId)}"], [data-finding-id="${CSS.escape(activeCommentId)}"]`)?.classList.add('review-active-comment');
+			for (const host of diffHosts()) host.shadowRoot?.querySelector<HTMLElement>(`[data-user-annotation-id="${CSS.escape(activeCommentId)}"], [data-finding-id="${CSS.escape(activeCommentId)}"]`)?.classList.add('review-active-comment');
 		}
 	}
 
@@ -407,7 +498,11 @@
 	}
 
 	function renderMarkdown(markdown: string) {
-		return marked.parse(markdown.trim(), { async: false, gfm: true, breaks: true }) as string;
+		return marked.parse(renderableMarkdown(markdown), { async: false, gfm: true, breaks: true }) as string;
+	}
+
+	function renderableMarkdown(markdown: string) {
+		return markdown.trim().replace(/^\s*(\/[^\s)]+\.(?:png|jpe?g|gif|webp))\s*$/gim, (_match, path: string) => `![pasted image](/api/reviews/${session.id}/attachments?path=${encodeURIComponent(path)})`);
 	}
 
 	function severityColor(severity: ReviewFinding['severity']) {
@@ -425,5 +520,5 @@
 	<div class="mb-4 rounded-lg border border-danger/50 bg-danger-soft p-4 text-danger">Could not render diff: {renderError}</div>
 {/if}
 
-<div class="mb-3 text-sm text-muted">Click a line number to add a review note.</div>
-<div class="grid gap-4" bind:this={container}></div>
+<div class="mb-2 text-sm text-muted">Click a line number to add a review note.</div>
+<div class="grid gap-2" bind:this={container}></div>

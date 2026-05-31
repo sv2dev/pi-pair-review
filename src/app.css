@@ -112,6 +112,14 @@ body {
 	-webkit-font-smoothing: antialiased;
 }
 
+.review-progress {
+	transition: width 0.35s ease;
+}
+
+.review-progress-complete {
+	animation: review-progress-complete 1.4s ease-out;
+}
+
 code {
 	border-radius: 0.3rem;
 	background: var(--code-bg);
@@ -236,6 +244,13 @@ input[type='checkbox'] {
 	color: var(--accent);
 	text-decoration: underline;
 }
+:is(.rendered-markdown, .markdown-body, .annotation-md) img {
+	max-width: min(100%, 36rem);
+	max-height: 24rem;
+	border: 1px solid var(--border);
+	border-radius: 0.6rem;
+	object-fit: contain;
+}
 
 /* ------------------------------------------------------------------ *
  * @pierre/trees decoration classes (library-injected, light DOM).
@@ -260,6 +275,24 @@ input[type='checkbox'] {
 	cursor: pointer;
 }
 
+.tree-active-row {
+	background: var(--accent-soft) !important;
+}
+
+.review-active-file {
+	box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.review-active-comment {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.modal-backdrop {
+	background: rgb(0 0 0 / 0.32);
+	backdrop-filter: blur(1px);
+}
+
 /* ------------------------------------------------------------------ *
  * Inline diff annotations (built by @pierre/diffs renderAnnotation).
  * Styled globally to match the original mechanism.
@@ -277,6 +310,10 @@ input[type='checkbox'] {
 .inline-annotation.user {
 	border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 	background: var(--accent-soft);
+}
+.inline-annotation.review-active-comment {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
 }
 .inline-annotation strong {
 	display: block;
@@ -311,6 +348,12 @@ input[type='checkbox'] {
 	to {
 		transform: rotate(360deg);
 	}
+}
+
+@keyframes review-progress-complete {
+	0% { filter: brightness(1); box-shadow: 0 0 0 rgb(139 139 245 / 0); }
+	35% { filter: brightness(1.45); box-shadow: 0 0 18px var(--accent); }
+	100% { filter: brightness(1); box-shadow: 0 0 0 rgb(139 139 245 / 0); }
 }
 
 .review-scroll-flash {
