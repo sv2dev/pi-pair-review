@@ -63,6 +63,19 @@ export function markPreReviewRunning(id: string, model?: string): void {
 	}));
 }
 
+export function markHeuristicPreReview(id: string, hunks: ReviewHunkRank[]): void {
+	update(id, (snapshot) => ({
+		...snapshot,
+		preReview: {
+			...snapshot.preReview,
+			status: 'idle',
+			summary: undefined,
+			findings: [],
+			hunks
+		}
+	}));
+}
+
 export function markPreReviewDone(id: string, findings: ReviewFinding[], hunks: ReviewHunkRank[], summary?: string): void {
 	update(id, (snapshot) => ({
 		...snapshot,
@@ -91,7 +104,7 @@ export function markPreReviewFailed(id: string, error: string, findings: ReviewF
 	}));
 }
 
-export function replaceReviewDiff(id: string, input: { title: string; baseDescription: string; diffMode: ReviewDiffMode; diffBase?: string; patch: string; files: ReviewFileSummary[]; findings: ReviewFinding[]; hunks: ReviewHunkRank[]; summary?: string }): boolean {
+export function replaceReviewDiff(id: string, input: { title: string; baseDescription: string; diffMode: ReviewDiffMode; diffBase?: string; patch: string; files: ReviewFileSummary[]; hunks: ReviewHunkRank[] }): boolean {
 	let replaced = false;
 	update(id, (snapshot) => {
 		replaced = true;
@@ -105,10 +118,8 @@ export function replaceReviewDiff(id: string, input: { title: string; baseDescri
 			files: input.files,
 			userAnnotations: [],
 			preReview: {
-				status: 'done',
-				finishedAt: new Date().toISOString(),
-				summary: input.summary,
-				findings: input.findings,
+				status: 'idle',
+				findings: [],
 				hunks: input.hunks
 			}
 		};

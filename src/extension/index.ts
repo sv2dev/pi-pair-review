@@ -2,7 +2,7 @@ import { getSupportedThinkingLevels, type Model } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { spawn, spawnSync } from 'node:child_process';
 import { buildDiffCommand, summarizePatchFiles } from './diff.ts';
-import { createReviewSession, markPreReviewDone } from './store.ts';
+import { createReviewSession, markHeuristicPreReview } from './store.ts';
 import { closeReviewWebServer, ensureReviewWebServer } from './server.ts';
 import { buildHeuristicPreReview, runPreReview } from './pre-review.ts';
 
@@ -67,7 +67,7 @@ export default function pairReviewExtension(pi: ExtensionAPI) {
 			});
 
 			const heuristicReview = buildHeuristicPreReview(patch);
-			markPreReviewDone(session.id, heuristicReview.findings, heuristicReview.hunks, heuristicReview.summary);
+			markHeuristicPreReview(session.id, heuristicReview.hunks);
 
 			const url = server.urlForReview(session.id);
 			openUrl(url);

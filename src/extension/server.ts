@@ -73,6 +73,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, svelteHa
 		return;
 	}
 
+	if (url.pathname === '/api/settings') {
+		handleSettingsRequest(req, res);
+		return;
+	}
+
 	if (url.pathname.startsWith('/api/reviews/')) {
 		handleApiRequest(req, res, url);
 		return;
@@ -91,12 +96,10 @@ function handleSettingsRequest(req: IncomingMessage, res: ServerResponse): void 
 		void readReviewUiSettings().then((settings) => writeJson(res, 200, settings)).catch((error) => writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) }));
 		return;
 	}
-
 	if (req.method === 'PATCH') {
-		void readJson(req).then((body) => updateReviewUiSettings(body)).then((settings) => writeJson(res, 200, settings)).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
+		void readJson(req).then((body) => updateReviewUiSettings(body as Parameters<typeof updateReviewUiSettings>[0])).then((settings) => writeJson(res, 200, settings)).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
 	}
-
 	writeJson(res, 405, { error: 'Method not allowed' });
 }
 
@@ -179,9 +182,7 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 				diffBase: diffCommand.base,
 				patch,
 				files: summarizePatchFiles(patch),
-				findings: heuristicReview.findings,
-				hunks: heuristicReview.hunks,
-				summary: heuristicReview.summary
+				hunks: heuristicReview.hunks
 			});
 			writeJson(res, 200, getReviewSession(id) ?? { ok: true });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
@@ -357,7 +358,7 @@ function handleEvents(id: string, res: ServerResponse): void {
 
 async function loadWebHandler(): Promise<WebHandler> {
 	const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-	if (process.env.PI_PAIR_REVIEW_DEV === '1') {
+	if (process.env.PI_PAIR_REVIEW_DEV !== '0') {
 		try {
 			const { createServer: createViteServer } = await import('vite');
 			const vite = await createViteServer({

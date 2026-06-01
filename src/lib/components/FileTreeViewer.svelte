@@ -7,7 +7,6 @@
 	export let selectedFile: string | undefined;
 	export let activeFile: string | undefined;
 	export let reviewed = new Set<string>();
-	export let counts = new Map<string, number>();
 
 	const dispatch = createEventDispatcher<{ select: string | undefined; toggleReviewed: string }>();
 	let host: HTMLDivElement | undefined;
@@ -15,7 +14,7 @@
 	let mounted = false;
 
 	$: paths = files.map((file) => file.path);
-	$: treeKey = `${paths.join('\n')}|${selectedFile ?? ''}|${[...reviewed].sort().join('\n')}|${[...counts.entries()].map(([path, count]) => `${path}:${count}`).join('\n')}`;
+	$: treeKey = `${paths.join('\n')}|${selectedFile ?? ''}|${[...reviewed].sort().join('\n')}`;
 	$: if (mounted && treeKey) renderTree();
 	$: if (mounted) markActiveRow(!selectedFile ? activeFile : undefined);
 
@@ -36,13 +35,10 @@
 			initialSelectedPaths: selectedFile ? [selectedFile] : [],
 			icons: 'standard',
 			gitStatus: files.map((file): GitStatusEntry => ({ path: file.path, status: gitStatus(file.changeType) })),
+			unsafeCSS: treeThemeCss(),
 			renderRowDecoration: ({ item }) => {
 				const path = item.path;
-				const parts = [];
-				const count = counts.get(path) ?? 0;
-				if (count) parts.push(String(count));
-				if (reviewed.has(path)) parts.push('✓');
-				return parts.length ? { text: parts.join(' ') } : null;
+				return reviewed.has(path) ? { text: 'reviewed' } : null;
 			},
 			onSelectionChange: (selected) => dispatch('select', selected[0])
 		});
@@ -58,6 +54,26 @@
 		row?.classList.add('tree-active-row');
 	}
 
+	function treeThemeCss() {
+		return `
+			:host, [data-file-tree-id] {
+				--trees-padding-inline-override: 0px;
+				--trees-item-margin-x-override: 0px;
+				--trees-scrollbar-gutter-override: 0px;
+				--trees-theme-list-active-selection-bg: var(--accent-soft);
+				--trees-theme-list-active-selection-fg: var(--fg);
+				--trees-theme-list-hover-bg: var(--surface-hover);
+				--trees-theme-focus-ring: var(--accent);
+				--trees-theme-git-added-fg: var(--accent);
+				--trees-theme-git-modified-fg: var(--accent);
+				--trees-theme-git-deleted-fg: var(--danger);
+			}
+			[data-item-git-status], [data-item-contains-git-change="true"] [data-item-section="git"] { color: var(--accent) !important; }
+			[data-item-git-status="deleted"] { color: var(--danger) !important; }
+			[data-item-selected] { background: var(--accent-soft) !important; color: var(--fg) !important; }
+		`;
+	}
+
 	function gitStatus(changeType: ReviewFileSummary['changeType']): GitStatusEntry['status'] {
 		return changeType === 'added' ? 'added' : changeType === 'deleted' ? 'deleted' : changeType === 'renamed' ? 'renamed' : 'modified';
 	}
@@ -66,4 +82,4 @@
 <button
 	class="mb-1 w-full justify-start rounded-md border-0 px-3 py-1.5 text-left text-sm hover:bg-surface-hover {!selectedFile ? 'bg-surface-hover font-medium' : 'bg-surface-2'}"
 	on:click={() => dispatch('select', undefined)}>All files</button>
-<div class="h-[calc(100vh-14rem)] min-h-72" bind:this={host}></div>
+<div class="max-h-72 min-h-48 overflow-auto lg:h-[calc(100vh-14rem)] lg:max-h-none lg:min-h-72" bind:this={host}></div>

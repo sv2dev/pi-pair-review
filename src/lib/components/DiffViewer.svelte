@@ -31,9 +31,12 @@
 	let prefersDark = true;
 	let activeFile: string | undefined;
 	let activeCommentId: string | undefined;
-	let scrollTimer: number | undefined;
+	let scrollFrame: number | undefined;
+	let containerWidth = 0;
 
-	$: renderKey = `${session.id}:${session.patch.length}:${findings.map((finding) => finding.id).join(',')}:${session.userAnnotations.map((annotation) => annotation.id).join(',')}:${selectedFile ?? '*'}:${reviewLevel}:${isolatedLevel}:${[...reviewed].join(',')}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.attentionLevel}`).join(',')}:${diffStyle}:${wrap}`;
+	$: effectiveDiffStyle = diffStyle === 'split' && containerWidth > 0 && containerWidth < 820 ? 'unified' : diffStyle;
+	$: diffAnnotationKey = session.userAnnotations.filter((annotation) => annotation.scope !== 'global').map((annotation) => `${annotation.id}:${annotation.body}`).join(',');
+	$: renderKey = `${session.id}:${session.patch.length}:${findings.map((finding) => finding.id).join(',')}:${diffAnnotationKey}:${selectedFile ?? '*'}:${reviewLevel}:${isolatedLevel}:${[...reviewed].join(',')}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.attentionLevel}`).join(',')}:${effectiveDiffStyle}:${wrap}`;
 	$: hunkFilterKey = `${reviewLevel}:${isolatedLevel}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.attentionLevel}`).join(',')}:${selectedFile ?? '*'}`;
 	$: if (mounted && renderKey) void renderDiffs();
 	$: if (mounted && hunkFilterKey) void applyHunkVisibility();
@@ -42,6 +45,10 @@
 
 	onMount(() => {
 		mounted = true;
+		const resizeObserver = new ResizeObserver(([entry]) => {
+			containerWidth = entry?.contentRect.width ?? 0;
+		});
+		if (container) resizeObserver.observe(container);
 		const media = window.matchMedia('(prefers-color-scheme: dark)');
 		prefersDark = media.matches;
 		const updateTheme = () => {
@@ -52,9 +59,10 @@
 		void renderDiffs();
 		window.addEventListener('scroll', onScroll, { passive: true });
 		return () => {
+			resizeObserver.disconnect();
 			media.removeEventListener('change', updateTheme);
 			window.removeEventListener('scroll', onScroll);
-			if (scrollTimer) window.clearTimeout(scrollTimer);
+			if (scrollFrame) window.cancelAnimationFrame(scrollFrame);
 			cleanup();
 		};
 	});
@@ -76,28 +84,31 @@
 			container.replaceChildren();
 			for (const file of visibleFiles) {
 				const section = document.createElement('section');
-				section.className = 'rendered-file mb-2 scroll-mt-[5.5rem] overflow-clip rounded-xl border border-border bg-surface';
+				section.className = 'rendered-file mb-2 scroll-mt-[5.5rem] rounded-xl border border-border bg-surface';
 				section.dataset.file = file.name;
 				container.append(section);
 
 				const header = document.createElement('div');
-				header.className = 'file-review-header sticky top-[var(--topbar-height)] z-10 flex items-center justify-between gap-4 border-b border-border bg-surface px-3 py-2';
+				header.className = 'file-review-header sticky top-[var(--topbar-height)] z-20 rounded-xl flex items-center justify-between gap-3 border-b border-border bg-surface px-3 py-2';
 				const title = document.createElement('button');
 				title.type = 'button';
-				title.className = 'file-collapse-toggle min-w-0 justify-start truncate rounded-md border-0 bg-transparent px-1 py-0.5 text-left text-sm font-medium hover:bg-surface-hover';
-				title.textContent = `${reviewed.has(file.name) && !selectedFile ? '▸' : '▾'} ${file.name}`;
+				title.className = 'file-collapse-toggle min-w-0 flex-1 overflow-hidden justify-start border-0 bg-transparent p-0 text-left text-sm font-medium hover:bg-transparent';
+				setFileTitle(title, file.name, reviewed.has(file.name) && !selectedFile);
+				const change = document.createElement('span');
+				change.className = `file-change-chip flex-none rounded-full px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase ${fileChangeClass(file.type)}`;
+				change.textContent = fileChangeLabel(file.type);
 				const actions = document.createElement('div');
 				actions.className = 'flex flex-none items-center gap-2';
 				const comment = document.createElement('button');
 				comment.type = 'button';
 				comment.className = 'whitespace-nowrap text-xs';
-				comment.textContent = 'Comment file';
+				appendIconLabel(comment, 'message-square-plus', 'Comment file');
 				const toggle = document.createElement('button');
 				toggle.type = 'button';
 				toggle.className = `file-reviewed-toggle whitespace-nowrap text-xs${reviewed.has(file.name) ? ' border-accent text-accent' : ''}`;
-				toggle.textContent = reviewed.has(file.name) ? 'Reviewed' : 'Mark reviewed';
+				appendIconLabel(toggle, 'check', 'reviewed');
 				actions.append(comment, toggle);
-				header.append(title, actions);
+				header.append(title, change, actions);
 				section.append(header);
 
 				const fileNotes = fileAnnotationsFor(file);
@@ -114,13 +125,14 @@
 				section.append(diffHost);
 				title.addEventListener('click', () => {
 					diffHost.hidden = !diffHost.hidden;
-					title.textContent = `${diffHost.hidden ? '▸' : '▾'} ${file.name}`;
+					setFileTitle(title, file.name, diffHost.hidden);
 				});
 				comment.addEventListener('click', () => dispatch('fileComment', file.name));
 				toggle.addEventListener('click', () => dispatch('toggleReviewed', file.name));
 
 				const instance = new FileDiff<RenderAnnotation>({
-					diffStyle,
+					disableFileHeader: true,
+					diffStyle: effectiveDiffStyle,
 					diffIndicators: 'bars',
 					lineDiffType: 'word-alt',
 					hunkSeparators: 'line-info-basic',
@@ -129,6 +141,7 @@
 					theme: { dark: 'pierre-dark', light: 'pierre-light' },
 					themeType: prefersDark ? 'dark' : 'light',
 					lineHoverHighlight: 'both',
+					unsafeCSS: diffUnsafeCss(),
 					onLineNumberClick: ({ lineNumber, annotationSide }) => {
 						dispatch('annotate', { file: file.name, line: lineNumber, side: annotationSide });
 					},
@@ -143,6 +156,7 @@
 				});
 			}
 			void applyHunkVisibility();
+			markActiveElements();
 			if (targetFindingId) void scrollToFinding(targetFindingId);
 			updateActiveFromScroll();
 		} catch (error) {
@@ -152,7 +166,8 @@
 
 	export function scrollFile(direction: 1 | -1) {
 		const sections = visibleFileSections();
-		scrollToNextElement(sections, direction, 'start');
+		const next = scrollToNextElement(sections, direction, 'start');
+		if (next?.dataset.file) activateFile(next.dataset.file);
 	}
 
 	export function scrollComment(direction: 1 | -1) {
@@ -176,11 +191,18 @@
 	}
 
 	function scrollToNextElement(elements: HTMLElement[], direction: 1 | -1, block: ScrollLogicalPosition) {
-		if (elements.length === 0) return;
+		if (elements.length === 0) return undefined;
 		const threshold = window.scrollY + (direction > 0 ? 96 : 0);
 		const positions = elements.map((element) => ({ element, top: element.getBoundingClientRect().top + window.scrollY })).sort((left, right) => left.top - right.top);
 		const next = direction > 0 ? positions.find((item) => item.top > threshold + 8) ?? positions[0] : [...positions].reverse().find((item) => item.top < threshold - 8) ?? positions.at(-1);
 		next?.element.scrollIntoView({ block, behavior: 'smooth' });
+		return next?.element;
+	}
+
+	function activateFile(file: string) {
+		activeFile = file;
+		markActiveElements();
+		dispatch('activeChange', { file: activeFile, commentId: activeCommentId });
 	}
 
 	function visibleFileSections() {
@@ -198,16 +220,25 @@
 	}
 
 	function onScroll() {
-		if (scrollTimer) window.clearTimeout(scrollTimer);
-		scrollTimer = window.setTimeout(updateActiveFromScroll, 80);
+		if (scrollFrame) return;
+		scrollFrame = window.requestAnimationFrame(() => {
+			scrollFrame = undefined;
+			updateActiveFromScroll();
+		});
 	}
 
 	function updateActiveFromScroll() {
 		if (!container) return;
-		const anchor = window.scrollY + Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--topbar-height')) + 24;
-		const sections = visibleFileSections().map((element) => ({ element, top: element.getBoundingClientRect().top + window.scrollY })).filter((item) => item.top <= anchor).sort((left, right) => right.top - left.top);
-		const nextFile = sections[0]?.element.dataset.file ?? visibleFileSections()[0]?.dataset.file;
-		const comments = commentElements().map((element) => ({ element, top: element.getBoundingClientRect().top + window.scrollY, id: element.dataset.userAnnotationId ?? element.dataset.findingId })).filter((item) => item.id && item.top <= anchor + 140).sort((left, right) => right.top - left.top);
+		const topbarHeight = topbarHeightPx();
+		const fileAnchor = topbarHeight + 1;
+		const visibleSections = visibleFileSections();
+		const sectionPositions = visibleSections.map((element) => ({ element, rect: element.getBoundingClientRect() }));
+		const currentSection = sectionPositions.find((item) => item.rect.top <= fileAnchor && item.rect.bottom > fileAnchor)
+			?? [...sectionPositions].reverse().find((item) => item.rect.top <= fileAnchor)
+			?? sectionPositions.find((item) => item.rect.top > fileAnchor);
+		const nextFile = currentSection?.element.dataset.file;
+		if (!nextFile) return;
+		const comments = commentElements().map((element) => ({ element, top: element.getBoundingClientRect().top, id: element.dataset.userAnnotationId ?? element.dataset.findingId })).filter((item) => item.id && item.top <= topbarHeight + 140).sort((left, right) => right.top - left.top);
 		const nextCommentId = comments[0]?.id;
 		if (nextFile === activeFile && nextCommentId === activeCommentId) return;
 		activeFile = nextFile;
@@ -216,14 +247,83 @@
 		dispatch('activeChange', { file: activeFile, commentId: activeCommentId });
 	}
 
+	function topbarHeightPx() {
+		const value = getComputedStyle(document.documentElement).getPropertyValue('--topbar-height').trim();
+		if (value.endsWith('rem')) return Number.parseFloat(value) * Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+		if (value.endsWith('px')) return Number.parseFloat(value);
+		return Number.parseFloat(value) || 0;
+	}
+
 	function markActiveElements() {
 		for (const element of container.querySelectorAll<HTMLElement>('.review-active-file, .review-active-comment')) element.classList.remove('review-active-file', 'review-active-comment');
 		for (const host of diffHosts()) for (const element of host.shadowRoot?.querySelectorAll<HTMLElement>('.review-active-comment') ?? []) element.classList.remove('review-active-comment');
+		container.classList.toggle('review-has-active-file', !!activeFile);
 		if (activeFile) container.querySelector<HTMLElement>(`[data-file="${CSS.escape(activeFile)}"]`)?.classList.add('review-active-file');
 		if (activeCommentId) {
 			container.querySelector<HTMLElement>(`[data-user-annotation-id="${CSS.escape(activeCommentId)}"], [data-finding-id="${CSS.escape(activeCommentId)}"]`)?.classList.add('review-active-comment');
 			for (const host of diffHosts()) host.shadowRoot?.querySelector<HTMLElement>(`[data-user-annotation-id="${CSS.escape(activeCommentId)}"], [data-finding-id="${CSS.escape(activeCommentId)}"]`)?.classList.add('review-active-comment');
 		}
+	}
+
+	function setFileTitle(button: HTMLButtonElement, file: string, collapsed: boolean) {
+		const label = document.createElement('span');
+		label.className = 'file-title-label min-w-0 truncate';
+		label.textContent = file;
+		button.replaceChildren(createLucideIcon(collapsed ? 'chevron-right' : 'chevron-down'), label);
+	}
+
+	function appendIconLabel(button: HTMLButtonElement, icon: LucideIconName, label: string) {
+		const text = document.createElement('span');
+		text.className = 'file-action-label';
+		text.textContent = label;
+		button.append(createLucideIcon(icon), text);
+	}
+
+	function fileChangeLabel(type: FileDiffMetadata['type']) {
+		return type === 'new' ? 'added' : type === 'deleted' ? 'deleted' : type === 'rename-pure' || type === 'rename-changed' ? 'renamed' : 'modified';
+	}
+
+	function fileChangeClass(type: FileDiffMetadata['type']) {
+		return type === 'deleted' ? 'bg-danger-soft text-danger' : 'bg-accent-soft text-accent';
+	}
+
+	type LucideIconName = 'chevron-down' | 'chevron-right' | 'check' | 'x' | 'message-square-plus';
+
+	function createLucideIcon(name: LucideIconName) {
+		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+		svg.setAttribute('viewBox', '0 0 24 24');
+		svg.setAttribute('width', '14');
+		svg.setAttribute('height', '14');
+		svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor');
+		svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round');
+		svg.setAttribute('stroke-linejoin', 'round');
+		svg.setAttribute('aria-hidden', 'true');
+		const paths: Record<LucideIconName, string[]> = {
+			'chevron-down': ['m6 9 6 6 6-6'],
+			'chevron-right': ['m9 18 6-6-6-6'],
+			check: ['M20 6 9 17l-5-5'],
+			x: ['M18 6 6 18', 'M6 6l12 12'],
+			'message-square-plus': ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z', 'M12 7v6', 'M9 10h6']
+		};
+		for (const d of paths[name]) {
+			const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+			path.setAttribute('d', d);
+			svg.append(path);
+		}
+		return svg;
+	}
+
+	function diffUnsafeCss() {
+		return `
+			[data-code] {
+				padding-right: var(--diffs-gap-inline, var(--diffs-gap-fallback));
+			}
+			[data-diff-type=split][data-overflow=scroll] [data-additions] [data-code] {
+				padding-right: var(--diffs-gap-inline, var(--diffs-gap-fallback));
+			}
+		`;
 	}
 
 	function cleanup() {
@@ -265,9 +365,9 @@
 		body.addEventListener('click', () => dispatch('editAnnotation', annotation));
 		const remove = document.createElement('button');
 		remove.type = 'button';
-		remove.className = 'file-annotation-remove flex-none border-0 bg-transparent p-0 text-lg leading-none text-danger hover:bg-transparent';
+		remove.className = 'file-annotation-remove flex-none border-0 bg-transparent p-1 text-danger hover:bg-transparent';
 		remove.title = 'Delete annotation';
-		remove.textContent = '×';
+		remove.append(createLucideIcon('x'));
 		remove.addEventListener('click', () => dispatch('deleteAnnotation', annotation));
 		element.append(body, remove);
 		return element;
@@ -293,7 +393,7 @@
 		for (const host of diffHosts()) {
 			for (const element of host.shadowRoot?.querySelectorAll<HTMLElement>('[data-line-index], [data-line-annotation], [data-gutter-buffer], [data-separator]') ?? []) element.style.removeProperty('display');
 		}
-		if (hunkRanks.length === 0 || session.preReview.status !== 'done') return;
+		if (hunkRanks.length === 0) return;
 
 		for (const file of visibleFiles) {
 			const section = container.querySelector<HTMLElement>(`[data-file="${CSS.escape(file.name)}"]`);
@@ -305,8 +405,8 @@
 			for (const hunk of file.hunks) {
 				const level = hunkRankFor(file, hunk)?.attentionLevel ?? 5;
 				if (isolatedLevel ? level !== Number(reviewLevel) : level > Number(reviewLevel)) continue;
-				const start = diffStyle === 'split' ? hunk.splitLineStart : hunk.unifiedLineStart;
-				const count = diffStyle === 'split' ? hunk.splitLineCount : hunk.unifiedLineCount;
+				const start = effectiveDiffStyle === 'split' ? hunk.splitLineStart : hunk.unifiedLineStart;
+				const count = effectiveDiffStyle === 'split' ? hunk.splitLineCount : hunk.unifiedLineCount;
 				for (let index = start; index < start + count; index += 1) visible.add(index);
 			}
 			for (const element of shadowRoot.querySelectorAll<HTMLElement>('[data-line-index]')) {
@@ -317,10 +417,10 @@
 	}
 
 	function filteredPatch() {
-		if ((hunkRanks.length === 0 || session.preReview.status !== 'done') && !selectedFile) return session.patch;
+		if (hunkRanks.length === 0 && !selectedFile) return session.patch;
 		const visible = new Set(
 			hunkRanks
-				.filter((rank) => session.preReview.status !== 'done' || (isolatedLevel ? rank.attentionLevel === Number(reviewLevel) : rank.attentionLevel <= Number(reviewLevel)))
+				.filter((rank) => isolatedLevel ? rank.attentionLevel === Number(reviewLevel) : rank.attentionLevel <= Number(reviewLevel))
 				.filter((rank) => !selectedFile || rank.file === selectedFile)
 				.map((rank) => hunkKey(rank.file, rank.oldStart, rank.oldLines, rank.newStart, rank.newLines))
 		);
@@ -372,7 +472,7 @@
 				newStart = Number(hunk[3]);
 				newLines = Number(hunk[4] ?? '1');
 				currentHunk = hunkKey(currentFile, oldStart, oldLines, newStart, newLines);
-				includeCurrentHunk = hunkRanks.length === 0 || session.preReview.status !== 'done' || visible.has(currentHunk);
+				includeCurrentHunk = hunkRanks.length === 0 || visible.has(currentHunk);
 				body = [line];
 				continue;
 			}
@@ -521,4 +621,4 @@
 {/if}
 
 <div class="mb-2 text-sm text-muted">Click a line number to add a review note.</div>
-<div class="grid gap-2" bind:this={container}></div>
+<div class="diff-container grid gap-2" bind:this={container}></div>

@@ -5,7 +5,7 @@
 	import DiffViewer from '$lib/components/DiffViewer.svelte';
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
-	import { Check, Clipboard, Edit3, HelpCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, MoreVertical, BookOpenText } from '@lucide/svelte';
+	import { Check, ChevronDown, ChevronRight, Clipboard, Edit3, HelpCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, MoreVertical, BookOpenText } from '@lucide/svelte';
 	import type { ReviewAttentionLevel, ReviewDiffMode, ReviewDiffStyle, ReviewFileSummary, ReviewFinding, ReviewMode, ReviewSessionSnapshot, ReviewUiSettings, UserReviewAnnotation } from '$lib/shared/review';
 
 	let session: ReviewSessionSnapshot | undefined;
@@ -28,7 +28,8 @@
 	let autoReview = false;
 	let autoReviewArmed = false;
 	let autoStartedSessionId: string | undefined;
-	let aiOpen = true;
+	let aiOpen = false;
+	let reviewModeOpen = false;
 	let modelDialog = false;
 	let shortcutsDialog = false;
 	let agentDefaultsSessionId: string | undefined;
@@ -61,12 +62,12 @@
 	$: files = session?.files ?? [];
 	$: findings = session?.preReview.findings ?? [];
 	$: hunkRanks = session?.preReview.hunks ?? [];
+	$: hasAgentReview = session?.preReview.status === 'done' && !!session.preReview.model;
 	$: reviewLevelOptions = availableReviewLevelOptions(hunkRanks);
 	$: currentReviewMode = reviewLevelOptions.find((option) => option.level === Number(reviewLevel)) ?? reviewModeOption(modeForLevel(reviewLevel), reviewLevel);
-	$: if (session?.preReview.status === 'done' && reviewLevelOptions.length > 0 && !reviewLevelOptions.some((option) => option.level === Number(reviewLevel))) reviewLevel = reviewLevelOptions[0]!.level;
+	$: if (hunkRanks.length > 0 && reviewLevelOptions.length > 0 && !reviewLevelOptions.some((option) => option.level === Number(reviewLevel))) reviewLevel = reviewLevelOptions[0]!.level;
 	$: visibleFiles = sortFilesForTree(filterFilesForReviewLevel(files, hunkRanks, reviewLevel));
 	$: userAnnotations = session?.userAnnotations ?? [];
-	$: counts = annotationCounts(visibleFiles, findings, userAnnotations);
 	$: reviewedFileCount = files.filter((file) => reviewed.has(file.path)).length;
 	$: reviewProgress = files.length ? Math.round((reviewedFileCount / files.length) * 100) : 0;
 	$: allFilesReviewed = files.length > 0 && reviewedFileCount >= files.length;
@@ -86,7 +87,7 @@
 		autoReviewArmed = false;
 		void runAgentReview();
 	}
-	$: if (session?.preReview.status === 'done' && session.preReview.summary && summaryOpenedForSession !== session.id) {
+	$: if (hasAgentReview && session?.preReview.summary && summaryOpenedForSession !== session.id) {
 		summaryOpenedForSession = session.id;
 	}
 	$: if (completionDialog) void focusCompletionDialog();
@@ -431,7 +432,7 @@
 		}
 		if (event.key.toLowerCase() === 's') {
 			event.preventDefault();
-			if (session?.preReview.summary) summaryDialog = true;
+			if (hasAgentReview && session?.preReview.summary) summaryDialog = true;
 			return;
 		}
 		if (event.key === '?') {
@@ -539,7 +540,7 @@
 	}
 
 	function filterFilesForReviewLevel(files: ReviewFileSummary[], ranks: typeof hunkRanks, level: number) {
-		if (ranks.length === 0 || session?.preReview.status !== 'done') return files;
+		if (ranks.length === 0) return files;
 		const visible = new Set(ranks.filter((rank) => isolatedLevel ? rank.attentionLevel === Number(level) : rank.attentionLevel <= Number(level)).map((rank) => rank.file));
 		return files.filter((file) => visible.has(file.path) || (file.previousPath && visible.has(file.previousPath)));
 	}
@@ -566,13 +567,6 @@
 		return 0;
 	}
 
-	function annotationCounts(files: ReviewFileSummary[], agent: ReviewFinding[], user: UserReviewAnnotation[]) {
-		const map = new Map<string, number>();
-		for (const file of files) map.set(file.path, 0);
-		for (const finding of agent) if (finding.file) map.set(finding.file, (map.get(finding.file) ?? 0) + 1);
-		for (const annotation of user) if (annotation.file) map.set(annotation.file, (map.get(annotation.file) ?? 0) + 1);
-		return map;
-	}
 
 	function buildFeedback() {
 		if (!session) return '';
@@ -612,17 +606,17 @@
 	<main class="grid min-h-screen place-items-center p-8"><div class="rounded-xl border border-border bg-surface-2 px-5 py-4 text-muted">Loading review…</div></main>
 {:else}
 	<div class="grid min-h-screen grid-cols-1 grid-rows-[auto_1fr] {gridColumnsClass}">
-		<header class="sticky top-0 z-20 col-span-full flex items-center justify-between gap-4 border-b border-border bg-bg/95 px-4 backdrop-blur-sm relative" style="min-height: var(--topbar-height)">
+		<header class="sticky top-0 z-40 col-span-full flex items-center justify-between gap-4 border-b border-border bg-bg/95 px-4 backdrop-blur-sm relative" style="min-height: var(--topbar-height)">
 			<div class="absolute bottom-0 left-0 h-0.5 w-full overflow-hidden bg-surface-2"><div class="review-progress h-full bg-accent" class:review-progress-complete={celebrateReviewComplete} style={`width: ${reviewProgress}%`}></div></div>
 			<div class="min-w-0">
 				<h1 class="truncate text-[0.95rem] font-semibold">{session.title}</h1>
 				<p class="truncate text-xs text-muted">{session.cwd} · {visibleFiles.length}/{files.length} files · {session.baseDescription}</p>
 			</div>
 			<div class="flex items-center gap-2">
-				<button title="Copy feedback" on:click={copyFeedback}><Clipboard size={15} />{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</button>
-				<button class={allFilesReviewed ? 'border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90' : ''} title="Insert feedback (W or Cmd/Ctrl+Enter)" on:click={() => finish()}><Check size={15} />Insert feedback</button>
-				<button title="Toggle left sidebar (B)" on:click={() => (leftOpen = !leftOpen)}>{#if leftOpen}<PanelLeftClose size={15} />{:else}<PanelLeftOpen size={15} />{/if}{leftOpen ? 'Hide' : 'Show'} files</button>
-				<button title="Toggle right sidebar (Shift+B)" on:click={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}{rightOpen ? 'Hide' : 'Show'} annotations</button>
+				<button title="Copy feedback" on:click={copyFeedback}><Clipboard size={15} /><span class="hidden sm:inline">{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</span></button>
+				<button class={allFilesReviewed ? 'border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90' : ''} title="Insert feedback (W or Cmd/Ctrl+Enter)" on:click={() => finish()}><Check size={15} /><span class="hidden sm:inline">Insert feedback</span></button>
+				<button title="Toggle left sidebar (B)" on:click={() => (leftOpen = !leftOpen)}>{#if leftOpen}<PanelLeftClose size={15} />{:else}<PanelLeftOpen size={15} />{/if}<span class="hidden sm:inline">{leftOpen ? 'Hide' : 'Show'} files</span></button>
+				<button title="Toggle right sidebar (Shift+B)" on:click={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}<span class="hidden sm:inline">{rightOpen ? 'Hide' : 'Show'} annotations</span></button>
 				<div class="relative">
 					<button class="w-8 px-0" title="View options" on:click={() => (viewMenuOpen = !viewMenuOpen)}><MoreVertical size={17} /></button>
 					{#if viewMenuOpen}
@@ -656,54 +650,64 @@
 			</section>
 			<section class="grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5">
 				<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{reviewedFileCount}/{files.length}</span></div>
-				<FileTreeViewer files={visibleFiles} {selectedFile} {activeFile} {reviewed} {counts} on:select={(event) => (selectedFile = event.detail)} on:toggleReviewed={(event) => toggleReviewed(event.detail)} />
+				<FileTreeViewer files={visibleFiles} {selectedFile} {activeFile} {reviewed} on:select={(event) => (selectedFile = event.detail)} on:toggleReviewed={(event) => toggleReviewed(event.detail)} />
 			</section>
 		</aside>
 		{/if}
 
-		<main class="min-w-0 px-3 py-3 lg:pr-0" style="scroll-padding-top: calc(var(--topbar-height) + 1rem)">
+		<main class="min-w-0 max-w-full px-3 py-3" style="scroll-padding-top: calc(var(--topbar-height) + 1rem)">
 			<DiffViewer bind:this={diffViewer} {session} {findings} {hunkRanks} {reviewLevel} {isolatedLevel} {reviewed} {selectedFile} {targetFindingId} {targetAnnotationId} {diffStyle} {wrap} on:activeChange={(event) => { activeFile = event.detail.file; activeCommentId = event.detail.commentId; }} on:annotate={(event) => startLineAnnotation(event.detail)} on:fileComment={(event) => (annotationDraft = { scope: 'file', file: event.detail, body: '' })} on:toggleReviewed={(event) => toggleReviewed(event.detail)} on:editAnnotation={(event) => editAnnotation(event.detail)} on:deleteAnnotation={(event) => removeAnnotation(event.detail)} />
 		</main>
 
 		{#if rightOpen}
 			<aside class="grid content-start gap-2 border-t border-border bg-bg p-2.5 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] min-w-0 overflow-x-hidden lg:overflow-y-auto lg:border-t-0 lg:border-l">
 				<section class="grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5">
-					<button class="flex w-full items-center justify-between gap-3 border-0 bg-transparent p-0 hover:bg-transparent" on:click={() => (aiOpen = !aiOpen)}><h2 class="text-[0.85rem] font-semibold">AI review</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{aiOpen ? '▾' : '▸'} {session.preReview.status === 'done' ? '✓ done' : session.preReview.status}</span></button>
+					<button class="flex w-full items-center justify-between gap-3 border-0 bg-transparent p-0 hover:bg-transparent" on:click={() => (aiOpen = !aiOpen)}><h2 class="flex items-center gap-1.5 text-[0.85rem] font-semibold">{#if aiOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}AI review</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{hasAgentReview ? 'done' : session.preReview.status === 'running' ? 'running' : session.preReview.status === 'failed' ? 'failed' : 'not run'}</span></button>
 					{#if aiOpen}
 						<div class="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
 							<button title="AI review settings" on:click={() => (modelDialog = true)}>{#if session.preReview.status === 'running'}<span class="inline-block h-3.5 w-3.5 flex-none animate-spin rounded-full border-2 border-accent/25 border-t-accent"></span>{:else}<Settings size={15} />{/if}Model: {selectedAgentModel?.name ?? 'none'}</button>
-							{#if session.preReview.status === 'done' && session.preReview.summary}<button class="w-9 px-0" title="Show summary (S)" on:click={() => (summaryDialog = true)}><BookOpenText size={15} /></button>{/if}
+							{#if hasAgentReview && session.preReview.summary}<button class="w-9 px-0" title="Show summary (S)" on:click={() => (summaryDialog = true)}><BookOpenText size={15} /></button>{/if}
 						</div>
-						{#if session.preReview.status === 'done'}
-							<div class="grid gap-2">
-								<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Review mode</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{currentReviewMode.label}</span></div>
-								{#if reviewLevelOptions.length <= 1}
-									<p class="rounded-lg border border-border bg-surface-2 p-2 text-sm text-muted"><strong class="text-fg">{currentReviewMode.label}</strong> · {currentReviewMode.description}</p>
-								{:else}
-									<div class="grid gap-1.5" title="Review mode (+/-)">
-										{#each reviewLevelOptions as option}
-											<label class="flex cursor-pointer items-start gap-2 rounded-lg border p-2 text-sm hover:bg-surface-hover {(isolatedLevel ? option.level === Number(reviewLevel) : option.level <= Number(reviewLevel)) ? 'border-accent bg-accent-soft' : 'border-border bg-surface-2'}">
-												<input type="radio" name="review-level" value={option.level} bind:group={reviewLevel} />
-												<span class="grid min-w-0 gap-0.5"><span class="font-medium text-fg">{option.label} <span class="text-xs font-normal text-muted">({option.count})</span></span><span class="text-xs text-muted">{option.description}</span></span>
-											</label>
-										{/each}
-									</div>
-								{/if}
-								<label class="flex items-center gap-2 text-sm text-muted" title="Toggle isolated review mode (I)"><input type="checkbox" bind:checked={isolatedLevel} /> Isolate selected mode</label>
-							</div>
-						{:else}
-							<p class="text-sm text-muted">{session.preReview.status === 'idle' ? 'Run agent review from model settings.' : 'Ranking hunks…'}</p>
-						{/if}
+						{#if !hasAgentReview}<p class="text-sm text-muted">{session.preReview.status === 'idle' ? 'Run agent review from model settings.' : session.preReview.status === 'running' ? 'Ranking hunks…' : 'Agent review failed.'}</p>{/if}
 						{#if session.agentReview.models.length === 0}<p class="text-sm text-muted">No authenticated models available.</p>{/if}
 						{#if session.preReview.error}<p class="text-sm text-muted">{session.preReview.error}</p>{/if}
 					{/if}
 				</section>
+				{#if hunkRanks.length > 0}
+					<section class="relative grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5 {reviewModeOpen || reviewLevelOptions.length <= 1 ? '' : 'pb-5'}">
+						<div class="flex items-center justify-between gap-3">
+							<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" on:click={() => (reviewModeOpen = !reviewModeOpen)}><h2 class="flex items-center gap-1.5 text-[0.85rem] font-semibold">{#if reviewModeOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}Review mode</h2><span class="truncate text-xs text-muted">{currentReviewMode.label}</span></button>
+						</div>
+						{#if !reviewModeOpen && reviewLevelOptions.length > 1}
+							<div class="absolute inset-x-2.5 bottom-2 flex gap-1" title="Review mode (+/-)">
+								{#each reviewLevelOptions as option}
+									<button class="h-1.5 min-w-0 flex-1 rounded-full border-0 p-0 {(isolatedLevel ? option.level === Number(reviewLevel) : option.level <= Number(reviewLevel)) ? 'bg-accent hover:bg-accent' : 'bg-surface-2 hover:bg-surface-hover'}" aria-label={`Review level ${option.level}`} on:click={() => (reviewLevel = option.level)}></button>
+								{/each}
+							</div>
+						{/if}
+						{#if reviewModeOpen}
+							{#if reviewLevelOptions.length <= 1}
+								<p class="rounded-lg border border-border bg-surface-2 p-2 text-sm text-muted"><strong class="text-fg">{currentReviewMode.label}</strong> · {currentReviewMode.description}</p>
+							{:else}
+								<div class="grid gap-1.5">
+									{#each reviewLevelOptions as option}
+										<label class="flex cursor-pointer items-start gap-2 rounded-lg border p-2 text-sm hover:bg-surface-hover {(isolatedLevel ? option.level === Number(reviewLevel) : option.level <= Number(reviewLevel)) ? 'border-accent bg-accent-soft' : 'border-border bg-surface-2'}">
+											<input type="radio" name="review-level" value={option.level} bind:group={reviewLevel} />
+											<span class="grid min-w-0 gap-0.5"><span class="font-medium text-fg">{option.label} <span class="text-xs font-normal text-muted">({option.count})</span></span><span class="text-xs text-muted">{option.description}</span></span>
+										</label>
+									{/each}
+								</div>
+							{/if}
+							<label class="flex items-center gap-2 text-sm text-muted" title="Toggle isolated review mode (I)"><input type="checkbox" bind:checked={isolatedLevel} /> Isolate selected mode</label>
+						{/if}
+					</section>
+				{/if}
 				<section class="grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5">
 					<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Agent annotations</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{findings.length}</span></div>
 					{#if findings.length === 0}<p class="text-sm text-muted">No highlights yet.</p>{:else}<div class="grid gap-2">{#each findings as finding}<div class="grid gap-1.5 rounded-lg p-2 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-1.5"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" on:click={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-2"><span class="{severityClass(finding)} rounded-full px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase">L{finding.attentionLevel} · {finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none rounded-full border-0 bg-transparent px-1 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" on:click={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" on:click={() => selectFinding(finding)}><div class="rendered-markdown text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
 				</section>
 				<section class="grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5">
-					<div class="sticky top-[calc(var(--topbar-height)+0.5rem)] z-10 -mx-2.5 -mt-2.5 grid gap-2 border-b border-border bg-surface p-2.5">
+					<div class="sticky top-0 z-10 -mx-2.5 -mt-2.5 grid gap-2 border-b border-border bg-surface p-2.5">
 						<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">User annotations</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{userAnnotations.length}</span></div>
 						<button class="w-full justify-start" title="Comment overall (O)" on:click={() => (annotationDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={15} />Comment overall</button>
 					</div>

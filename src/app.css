@@ -279,8 +279,64 @@ input[type='checkbox'] {
 	background: var(--accent-soft) !important;
 }
 
-.review-active-file {
-	box-shadow: inset 3px 0 0 var(--accent);
+.diff-container {
+	container-type: inline-size;
+	min-width: 0;
+	max-width: 100%;
+	padding-left: 4px;
+}
+
+.rendered-file,
+.file-diff-host {
+	min-width: 0;
+	max-width: 100%;
+}
+
+.rendered-file {
+	position: relative;
+	transition:
+		opacity 0.18s ease,
+		border-color 0.18s ease;
+}
+
+.rendered-file::before {
+	content: '';
+	position: absolute;
+	inset-block: 0;
+	inset-inline-start: -4px;
+	z-index: 2;
+	width: 2px;
+	background: var(--accent);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.18s ease;
+}
+
+.file-diff-host {
+	overflow-x: auto;
+}
+
+.file-diff-host > * {
+	min-width: 0;
+	max-width: 100%;
+}
+
+@container (max-width: 820px) {
+	.file-action-label {
+		display: none;
+	}
+}
+
+.review-has-active-file .rendered-file:not(.review-active-file) {
+	opacity: 0.58;
+}
+
+.review-active-file::before {
+	opacity: 1;
+}
+
+.review-active-file .file-collapse-toggle {
+	color: var(--accent);
 }
 
 .review-active-comment {
@@ -292,6 +348,50 @@ input[type='checkbox'] {
 	background: rgb(0 0 0 / 0.32);
 	backdrop-filter: blur(1px);
 }
+
+.confetti-layer {
+	position: fixed;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+.confetti-layer i {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	width: 0.5rem;
+	height: 0.85rem;
+	border-radius: 0.15rem;
+	background: var(--c, var(--accent));
+	animation: confetti-burst 1.7s ease-out forwards;
+}
+.confetti-layer i:nth-child(3n) { --c: var(--accent); }
+.confetti-layer i:nth-child(3n + 1) { --c: var(--warning); }
+.confetti-layer i:nth-child(3n + 2) { --c: var(--danger); }
+.confetti-layer i:nth-child(1) { --x: -42; --y: -38; --r: 220deg; animation-delay: 0s; }
+.confetti-layer i:nth-child(2) { --x: -28; --y: -46; --r: 320deg; animation-delay: 0.02s; }
+.confetti-layer i:nth-child(3) { --x: -12; --y: -52; --r: 180deg; animation-delay: 0.05s; }
+.confetti-layer i:nth-child(4) { --x: 8; --y: -50; --r: 420deg; animation-delay: 0.01s; }
+.confetti-layer i:nth-child(5) { --x: 24; --y: -44; --r: 260deg; animation-delay: 0.06s; }
+.confetti-layer i:nth-child(6) { --x: 42; --y: -36; --r: 500deg; animation-delay: 0.03s; }
+.confetti-layer i:nth-child(7) { --x: -50; --y: -18; --r: 340deg; animation-delay: 0.08s; }
+.confetti-layer i:nth-child(8) { --x: -34; --y: -12; --r: 180deg; animation-delay: 0.04s; }
+.confetti-layer i:nth-child(9) { --x: 34; --y: -12; --r: 540deg; animation-delay: 0.09s; }
+.confetti-layer i:nth-child(10) { --x: 52; --y: -18; --r: 270deg; animation-delay: 0.07s; }
+.confetti-layer i:nth-child(11) { --x: -54; --y: 8; --r: 460deg; animation-delay: 0.02s; }
+.confetti-layer i:nth-child(12) { --x: -36; --y: 18; --r: 260deg; animation-delay: 0.1s; }
+.confetti-layer i:nth-child(13) { --x: -18; --y: 28; --r: 390deg; animation-delay: 0.06s; }
+.confetti-layer i:nth-child(14) { --x: 0; --y: 34; --r: 200deg; animation-delay: 0.04s; }
+.confetti-layer i:nth-child(15) { --x: 18; --y: 28; --r: 480deg; animation-delay: 0.09s; }
+.confetti-layer i:nth-child(16) { --x: 38; --y: 18; --r: 300deg; animation-delay: 0.03s; }
+.confetti-layer i:nth-child(17) { --x: 56; --y: 8; --r: 560deg; animation-delay: 0.11s; }
+.confetti-layer i:nth-child(18) { --x: -46; --y: 42; --r: 240deg; animation-delay: 0.05s; }
+.confetti-layer i:nth-child(19) { --x: -26; --y: 54; --r: 520deg; animation-delay: 0.12s; }
+.confetti-layer i:nth-child(20) { --x: -6; --y: 60; --r: 320deg; animation-delay: 0.08s; }
+.confetti-layer i:nth-child(21) { --x: 14; --y: 58; --r: 440deg; animation-delay: 0.13s; }
+.confetti-layer i:nth-child(22) { --x: 32; --y: 50; --r: 280deg; animation-delay: 0.1s; }
+.confetti-layer i:nth-child(23) { --x: 48; --y: 38; --r: 620deg; animation-delay: 0.07s; }
+.confetti-layer i:nth-child(24) { --x: 0; --y: -64; --r: 360deg; animation-delay: 0.14s; }
 
 /* ------------------------------------------------------------------ *
  * Inline diff annotations (built by @pierre/diffs renderAnnotation).
@@ -354,6 +454,12 @@ input[type='checkbox'] {
 	0% { filter: brightness(1); box-shadow: 0 0 0 rgb(139 139 245 / 0); }
 	35% { filter: brightness(1.45); box-shadow: 0 0 18px var(--accent); }
 	100% { filter: brightness(1); box-shadow: 0 0 0 rgb(139 139 245 / 0); }
+}
+
+@keyframes confetti-burst {
+	0% { transform: translate3d(-50%, -50%, 0) scale(0.6) rotate(0deg); opacity: 0; }
+	12% { opacity: 1; }
+	100% { transform: translate3d(calc(-50% + var(--x) * 1vw), calc(-50% + var(--y) * 1vh), 0) scale(1) rotate(var(--r)); opacity: 0; }
 }
 
 .review-scroll-flash {
