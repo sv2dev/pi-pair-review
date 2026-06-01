@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher, onMount } from 'svelte';
+	import { onMount } from 'svelte';
 	import { EditorState } from '@codemirror/state';
 	import { EditorView, keymap, placeholder as cmPlaceholder } from '@codemirror/view';
 	import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
@@ -7,16 +7,19 @@
 	import { markdown } from '@codemirror/lang-markdown';
 	import { tags as t } from '@lezer/highlight';
 
-	export let value = '';
-	export let placeholder = 'Write a markdown comment… (paste an image to attach a temp file)';
-
-	const dispatch = createEventDispatcher<{ imagepaste: File }>();
+	let { value = $bindable(''), placeholder = 'Write a markdown comment… (paste an image to attach a temp file)', onImagePaste }: {
+		value?: string;
+		placeholder?: string;
+		onImagePaste?: (file: File) => void;
+	} = $props();
 
 	let host: HTMLDivElement;
-	let view: EditorView | undefined;
+	let view = $state<EditorView | undefined>();
 	let syncing = false;
 
-	$: if (view && !syncing && value !== view.state.doc.toString()) setDoc(value);
+	$effect(() => {
+		if (view && !syncing && value !== view.state.doc.toString()) setDoc(value);
+	});
 
 	/** Insert text at the current selection (used for pasted image paths). */
 	export function insertText(text: string) {
@@ -62,7 +65,7 @@
 		const file = [...(event.clipboardData?.files ?? [])].find((item) => item.type.startsWith('image/'));
 		if (!file) return false;
 		event.preventDefault();
-		dispatch('imagepaste', file);
+		onImagePaste?.(file);
 		return true;
 	}
 

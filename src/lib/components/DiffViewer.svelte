@@ -1,6 +1,9 @@
 <script lang="ts">
-	import { marked } from 'marked';
-	import { onMount, createEventDispatcher, tick } from 'svelte';
+	import { onMount, tick } from 'svelte';
+	import { renderReviewMarkdown } from '$lib/client/review-markdown';
+	import { compareTreeOrder } from '$lib/client/review-ui';
+	import { SvelteSet } from 'svelte/reactivity';
+	import { Check, ChevronDown, ChevronRight, MessageSquarePlus, Trash2 } from '@lucide/svelte';
 	import type { DiffLineAnnotation, FileDiff as FileDiffInstance, FileDiffMetadata } from '@pierre/diffs';
 	import type { ReviewFinding, ReviewHunkRank, ReviewSessionSnapshot, UserReviewAnnotation } from '$lib/shared/review';
 
@@ -8,40 +11,80 @@
 		| { kind: 'finding'; value: ReviewFinding }
 		| { kind: 'user'; value: UserReviewAnnotation };
 
-	export let session: ReviewSessionSnapshot;
-	export let findings: ReviewFinding[] = [];
-	export let hunkRanks: ReviewHunkRank[] = [];
-	export let reviewLevel = 1;
-	export let selectedFile: string | undefined = undefined;
-	export let targetFindingId: string | undefined = undefined;
-	export let targetAnnotationId: string | undefined = undefined;
-	export let diffStyle: 'split' | 'unified' = 'split';
-	export let wrap = false;
-	export let reviewed = new Set<string>();
-	export let isolatedLevel = false;
-
-	const dispatch = createEventDispatcher<{ annotate: { file: string; line: number; side: 'additions' | 'deletions' }; toggleReviewed: string; fileComment: string; editAnnotation: UserReviewAnnotation; deleteAnnotation: UserReviewAnnotation; activeChange: { file?: string; commentId?: string } }>();
+	let {
+		session,
+		findings = [],
+		hunkRanks = [],
+		reviewLevel = 1,
+		selectedFile,
+		targetFindingId,
+		targetAnnotationId,
+		diffStyle = 'split',
+		wrap = false,
+		reviewed = new SvelteSet<string>(),
+		isolatedLevel = false,
+		onAnnotate,
+		onToggleReviewed,
+		onFileComment,
+		onEditAnnotation,
+		onDeleteAnnotation,
+		onActiveChange
+	}: {
+		session: ReviewSessionSnapshot;
+		findings?: ReviewFinding[];
+		hunkRanks?: ReviewHunkRank[];
+		reviewLevel?: number;
+		selectedFile?: string;
+		targetFindingId?: string;
+		targetAnnotationId?: string;
+		diffStyle?: 'split' | 'unified';
+		wrap?: boolean;
+		reviewed?: Set<string>;
+		isolatedLevel?: boolean;
+		onAnnotate?: (detail: { file: string; line: number; side: 'additions' | 'deletions' }) => void;
+		onToggleReviewed?: (file: string) => void;
+		onFileComment?: (file: string) => void;
+		onEditAnnotation?: (annotation: UserReviewAnnotation) => void;
+		onDeleteAnnotation?: (annotation: UserReviewAnnotation) => void;
+		onActiveChange?: (detail: { file?: string; commentId?: string }) => void;
+	} = $props();
 
 	let container: HTMLDivElement;
-	let mounted = false;
-	let renderError: string | undefined;
+	let mounted = $state(false);
+	let renderError = $state<string | undefined>();
 	let renderSequence = 0;
+	let renderedFiles = $state.raw<FileDiffMetadata[]>([]);
 	let instances: FileDiffInstance<RenderAnnotation>[] = [];
 	let modulePromise: Promise<typeof import('@pierre/diffs')> | undefined;
-	let prefersDark = true;
-	let activeFile: string | undefined;
-	let activeCommentId: string | undefined;
+	let prefersDark = $state(true);
+	let activeFile = $state<string | undefined>();
+	let activeCommentId = $state<string | undefined>();
 	let scrollFrame: number | undefined;
-	let containerWidth = 0;
+	let containerWidth = $state(0);
+	const diffHostElements = new Map<string, HTMLDivElement>();
+	const expandedFiles = new SvelteSet<string>();
+	const collapsedFiles = new SvelteSet<string>();
 
-	$: effectiveDiffStyle = diffStyle === 'split' && containerWidth > 0 && containerWidth < 820 ? 'unified' : diffStyle;
-	$: diffAnnotationKey = session.userAnnotations.filter((annotation) => annotation.scope !== 'global').map((annotation) => `${annotation.id}:${annotation.body}`).join(',');
-	$: renderKey = `${session.id}:${session.patch.length}:${findings.map((finding) => finding.id).join(',')}:${diffAnnotationKey}:${selectedFile ?? '*'}:${reviewLevel}:${isolatedLevel}:${[...reviewed].join(',')}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.attentionLevel}`).join(',')}:${effectiveDiffStyle}:${wrap}`;
-	$: hunkFilterKey = `${reviewLevel}:${isolatedLevel}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.attentionLevel}`).join(',')}:${selectedFile ?? '*'}`;
-	$: if (mounted && renderKey) void renderDiffs();
-	$: if (mounted && hunkFilterKey) void applyHunkVisibility();
-	$: if (mounted && targetFindingId) void scrollToFinding(targetFindingId);
-	$: if (mounted && targetAnnotationId) void scrollToAnnotation(targetAnnotationId);
+	let effectiveDiffStyle = $derived(diffStyle === 'split' && containerWidth > 0 && containerWidth < 820 ? 'unified' : diffStyle);
+	let diffAnnotationKey = $derived(session.userAnnotations.filter((annotation) => annotation.scope !== 'global').map((annotation) => `${annotation.id}:${annotation.scope}:${annotation.file ?? ''}:${annotation.line ?? ''}:${annotation.side ?? ''}:${annotation.body}`).join(','));
+	let renderKey = $derived(`${session.id}:${hashString(session.patch)}:${findings.map((finding) => `${finding.id}:${finding.file ?? ''}:${finding.line ?? ''}:${finding.side ?? ''}:${finding.title}:${finding.rationale}:${finding.recommendation ?? ''}`).join(',')}:${diffAnnotationKey}:${selectedFile ?? '*'}:${reviewLevel}:${isolatedLevel}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.file}:${hunk.oldStart}:${hunk.oldLines}:${hunk.newStart}:${hunk.newLines}:${hunk.attentionLevel}`).join(',')}:${effectiveDiffStyle}:${wrap}`);
+	let hunkFilterKey = $derived(`${reviewLevel}:${isolatedLevel}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.attentionLevel}`).join(',')}:${selectedFile ?? '*'}`);
+
+	$effect(() => {
+		if (mounted && renderKey) void renderDiffs();
+	});
+
+	$effect(() => {
+		if (mounted && hunkFilterKey) void applyHunkVisibility();
+	});
+
+	$effect(() => {
+		if (mounted && targetFindingId) void scrollToFinding(targetFindingId);
+	});
+
+	$effect(() => {
+		if (mounted && targetAnnotationId) void scrollToAnnotation(targetAnnotationId);
+	});
 
 	onMount(() => {
 		mounted = true;
@@ -57,11 +100,9 @@
 		};
 		media.addEventListener('change', updateTheme);
 		void renderDiffs();
-		window.addEventListener('scroll', onScroll, { passive: true });
 		return () => {
 			resizeObserver.disconnect();
 			media.removeEventListener('change', updateTheme);
-			window.removeEventListener('scroll', onScroll);
 			if (scrollFrame) window.cancelAnimationFrame(scrollFrame);
 			cleanup();
 		};
@@ -77,58 +118,15 @@
 			const { FileDiff, parsePatchFiles } = await (modulePromise ??= import('@pierre/diffs'));
 			if (sequence !== renderSequence) return;
 
-			const patch = filteredPatch();
-			const parsed = parsePatchFiles(patch, session.id, true);
-			const visibleFiles = parsed.flatMap((patch) => patch.files).sort((left, right) => compareTreeOrder(left.name, right.name));
+			const parsed = parsePatchFiles(filteredPatch(), session.id, true);
+			renderedFiles = parsed.flatMap((patch) => patch.files).sort((left, right) => compareTreeOrder(left.name, right.name));
+			await tick();
+			if (sequence !== renderSequence) return;
 
-			container.replaceChildren();
-			for (const file of visibleFiles) {
-				const section = document.createElement('section');
-				section.className = 'rendered-file mb-2 scroll-mt-[5.5rem] rounded-xl border border-border bg-surface';
-				section.dataset.file = file.name;
-				container.append(section);
-
-				const header = document.createElement('div');
-				header.className = 'file-review-header sticky top-[var(--topbar-height)] z-20 rounded-xl flex items-center justify-between gap-3 border-b border-border bg-surface px-3 py-2';
-				const title = document.createElement('button');
-				title.type = 'button';
-				title.className = 'file-collapse-toggle min-w-0 flex-1 overflow-hidden justify-start border-0 bg-transparent p-0 text-left text-sm font-medium hover:bg-transparent';
-				setFileTitle(title, file.name, reviewed.has(file.name) && !selectedFile);
-				const change = document.createElement('span');
-				change.className = `file-change-chip flex-none rounded-full px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase ${fileChangeClass(file.type)}`;
-				change.textContent = fileChangeLabel(file.type);
-				const actions = document.createElement('div');
-				actions.className = 'flex flex-none items-center gap-2';
-				const comment = document.createElement('button');
-				comment.type = 'button';
-				comment.className = 'whitespace-nowrap text-xs';
-				appendIconLabel(comment, 'message-square-plus', 'Comment file');
-				const toggle = document.createElement('button');
-				toggle.type = 'button';
-				toggle.className = `file-reviewed-toggle whitespace-nowrap text-xs${reviewed.has(file.name) ? ' border-accent text-accent' : ''}`;
-				appendIconLabel(toggle, 'check', 'reviewed');
-				actions.append(comment, toggle);
-				header.append(title, change, actions);
-				section.append(header);
-
-				const fileNotes = fileAnnotationsFor(file);
-				if (fileNotes.length > 0) {
-					const notes = document.createElement('div');
-					notes.className = 'file-annotations grid gap-2 border-b border-border p-3';
-					for (const annotation of fileNotes) notes.append(renderFileAnnotation(annotation));
-					section.append(notes);
-				}
-
-				const diffHost = document.createElement('div');
-				diffHost.className = 'file-diff-host';
-				if (reviewed.has(file.name) && !selectedFile) diffHost.hidden = true;
-				section.append(diffHost);
-				title.addEventListener('click', () => {
-					diffHost.hidden = !diffHost.hidden;
-					setFileTitle(title, file.name, diffHost.hidden);
-				});
-				comment.addEventListener('click', () => dispatch('fileComment', file.name));
-				toggle.addEventListener('click', () => dispatch('toggleReviewed', file.name));
+			for (const file of renderedFiles) {
+				const host = diffHostElements.get(file.name);
+				if (!host) continue;
+				host.replaceChildren();
 
 				const instance = new FileDiff<RenderAnnotation>({
 					disableFileHeader: true,
@@ -143,7 +141,7 @@
 					lineHoverHighlight: 'both',
 					unsafeCSS: diffUnsafeCss(),
 					onLineNumberClick: ({ lineNumber, annotationSide }) => {
-						dispatch('annotate', { file: file.name, line: lineNumber, side: annotationSide });
+						onAnnotate?.({ file: file.name, line: lineNumber, side: annotationSide });
 					},
 					renderAnnotation
 				});
@@ -151,7 +149,7 @@
 				instances.push(instance);
 				instance.render({
 					fileDiff: file,
-					containerWrapper: diffHost,
+					containerWrapper: host,
 					lineAnnotations: annotationsFor(file)
 				});
 			}
@@ -182,7 +180,7 @@
 		if (!activeCommentId) return false;
 		const annotation = session.userAnnotations.find((candidate) => candidate.id === activeCommentId);
 		if (!annotation) return false;
-		dispatch('editAnnotation', annotation);
+		onEditAnnotation?.(annotation);
 		return true;
 	}
 
@@ -202,7 +200,7 @@
 	function activateFile(file: string) {
 		activeFile = file;
 		markActiveElements();
-		dispatch('activeChange', { file: activeFile, commentId: activeCommentId });
+		onActiveChange?.({ file: activeFile, commentId: activeCommentId });
 	}
 
 	function visibleFileSections() {
@@ -211,12 +209,12 @@
 
 	function commentElements() {
 		const light = [...container.querySelectorAll<HTMLElement>('[data-user-annotation-id], [data-finding-id]')];
-		const shadow = diffHosts().flatMap((host) => [...(host.shadowRoot?.querySelectorAll<HTMLElement>('[data-user-annotation-id], [data-finding-id]') ?? [])]);
+		const shadow = shadowHosts().flatMap((host) => [...(host.shadowRoot?.querySelectorAll<HTMLElement>('[data-user-annotation-id], [data-finding-id]') ?? [])]);
 		return [...light, ...shadow].filter((element) => element.offsetParent !== null || !!element.getClientRects().length);
 	}
 
 	function hunkElements() {
-		return diffHosts().flatMap((host) => [...(host.shadowRoot?.querySelectorAll<HTMLElement>('[data-separator]') ?? [])]);
+		return shadowHosts().flatMap((host) => [...(host.shadowRoot?.querySelectorAll<HTMLElement>('[data-separator]') ?? [])]);
 	}
 
 	function onScroll() {
@@ -244,7 +242,7 @@
 		activeFile = nextFile;
 		activeCommentId = nextCommentId;
 		markActiveElements();
-		dispatch('activeChange', { file: activeFile, commentId: activeCommentId });
+		onActiveChange?.({ file: activeFile, commentId: activeCommentId });
 	}
 
 	function topbarHeightPx() {
@@ -255,28 +253,31 @@
 	}
 
 	function markActiveElements() {
-		for (const element of container.querySelectorAll<HTMLElement>('.review-active-file, .review-active-comment')) element.classList.remove('review-active-file', 'review-active-comment');
-		for (const host of diffHosts()) for (const element of host.shadowRoot?.querySelectorAll<HTMLElement>('.review-active-comment') ?? []) element.classList.remove('review-active-comment');
-		container.classList.toggle('review-has-active-file', !!activeFile);
-		if (activeFile) container.querySelector<HTMLElement>(`[data-file="${CSS.escape(activeFile)}"]`)?.classList.add('review-active-file');
-		if (activeCommentId) {
-			container.querySelector<HTMLElement>(`[data-user-annotation-id="${CSS.escape(activeCommentId)}"], [data-finding-id="${CSS.escape(activeCommentId)}"]`)?.classList.add('review-active-comment');
-			for (const host of diffHosts()) host.shadowRoot?.querySelector<HTMLElement>(`[data-user-annotation-id="${CSS.escape(activeCommentId)}"], [data-finding-id="${CSS.escape(activeCommentId)}"]`)?.classList.add('review-active-comment');
+		for (const host of shadowHosts()) for (const element of host.shadowRoot?.querySelectorAll<HTMLElement>('.review-active-comment') ?? []) element.classList.remove('review-active-comment');
+		if (activeCommentId) for (const host of shadowHosts()) host.shadowRoot?.querySelector<HTMLElement>(`[data-user-annotation-id="${CSS.escape(activeCommentId)}"], [data-finding-id="${CSS.escape(activeCommentId)}"]`)?.classList.add('review-active-comment');
+	}
+
+	function isFileCollapsed(file: string) {
+		return collapsedFiles.has(file) || (reviewed.has(file) && !selectedFile && !expandedFiles.has(file));
+	}
+
+	function toggleFileCollapsed(file: string) {
+		if (isFileCollapsed(file)) {
+			collapsedFiles.delete(file);
+			expandedFiles.add(file);
+		} else {
+			expandedFiles.delete(file);
+			collapsedFiles.add(file);
 		}
 	}
 
-	function setFileTitle(button: HTMLButtonElement, file: string, collapsed: boolean) {
-		const label = document.createElement('span');
-		label.className = 'file-title-label min-w-0 truncate';
-		label.textContent = file;
-		button.replaceChildren(createLucideIcon(collapsed ? 'chevron-right' : 'chevron-down'), label);
-	}
-
-	function appendIconLabel(button: HTMLButtonElement, icon: LucideIconName, label: string) {
-		const text = document.createElement('span');
-		text.className = 'file-action-label';
-		text.textContent = label;
-		button.append(createLucideIcon(icon), text);
+	function registerDiffHost(file: string) {
+		return (node: HTMLDivElement) => {
+			diffHostElements.set(file, node);
+			return () => {
+				diffHostElements.delete(file);
+			};
+		};
 	}
 
 	function fileChangeLabel(type: FileDiffMetadata['type']) {
@@ -285,34 +286,6 @@
 
 	function fileChangeClass(type: FileDiffMetadata['type']) {
 		return type === 'deleted' ? 'bg-danger-soft text-danger' : 'bg-accent-soft text-accent';
-	}
-
-	type LucideIconName = 'chevron-down' | 'chevron-right' | 'check' | 'x' | 'message-square-plus';
-
-	function createLucideIcon(name: LucideIconName) {
-		const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-		svg.setAttribute('viewBox', '0 0 24 24');
-		svg.setAttribute('width', '14');
-		svg.setAttribute('height', '14');
-		svg.setAttribute('fill', 'none');
-		svg.setAttribute('stroke', 'currentColor');
-		svg.setAttribute('stroke-width', '2');
-		svg.setAttribute('stroke-linecap', 'round');
-		svg.setAttribute('stroke-linejoin', 'round');
-		svg.setAttribute('aria-hidden', 'true');
-		const paths: Record<LucideIconName, string[]> = {
-			'chevron-down': ['m6 9 6 6 6-6'],
-			'chevron-right': ['m9 18 6-6-6-6'],
-			check: ['M20 6 9 17l-5-5'],
-			x: ['M18 6 6 18', 'M6 6l12 12'],
-			'message-square-plus': ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z', 'M12 7v6', 'M9 10h6']
-		};
-		for (const d of paths[name]) {
-			const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-			path.setAttribute('d', d);
-			svg.append(path);
-		}
-		return svg;
 	}
 
 	function diffUnsafeCss() {
@@ -329,48 +302,11 @@
 	function cleanup() {
 		for (const instance of instances) instance.cleanUp();
 		instances = [];
-		container?.replaceChildren();
-	}
-
-	function compareTreeOrder(leftPath: string, rightPath: string) {
-		const left = leftPath.split('/');
-		const right = rightPath.split('/');
-		const length = Math.max(left.length, right.length);
-		for (let index = 0; index < length; index += 1) {
-			const leftPart = left[index];
-			const rightPart = right[index];
-			if (leftPart === undefined) return 1;
-			if (rightPart === undefined) return -1;
-			if (leftPart === rightPart) continue;
-			const leftIsDirectory = index < left.length - 1;
-			const rightIsDirectory = index < right.length - 1;
-			if (leftIsDirectory !== rightIsDirectory) return leftIsDirectory ? -1 : 1;
-			return leftPart.localeCompare(rightPart);
-		}
-		return 0;
+		for (const host of diffHostElements.values()) host.replaceChildren();
 	}
 
 	function fileAnnotationsFor(file: FileDiffMetadata) {
 		return session.userAnnotations.filter((annotation) => annotation.scope === 'file' && annotation.file && (annotation.file === file.name || annotation.file === file.prevName));
-	}
-
-	function renderFileAnnotation(annotation: UserReviewAnnotation) {
-		const element = document.createElement('aside');
-		element.className = 'file-annotation grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 rounded-lg border border-accent/35 bg-accent-soft p-2';
-		element.dataset.userAnnotationId = annotation.id;
-		const body = document.createElement('button');
-		body.type = 'button';
-		body.className = 'file-annotation-body annotation-md block w-full min-w-0 border-0 bg-transparent p-0 text-left text-sm hover:bg-transparent';
-		body.innerHTML = renderMarkdown(annotation.body);
-		body.addEventListener('click', () => dispatch('editAnnotation', annotation));
-		const remove = document.createElement('button');
-		remove.type = 'button';
-		remove.className = 'file-annotation-remove flex-none border-0 bg-transparent p-1 text-danger hover:bg-transparent';
-		remove.title = 'Delete annotation';
-		remove.append(createLucideIcon('x'));
-		remove.addEventListener('click', () => dispatch('deleteAnnotation', annotation));
-		element.append(body, remove);
-		return element;
 	}
 
 	function annotationsFor(file: FileDiffMetadata): DiffLineAnnotation<RenderAnnotation>[] {
@@ -390,7 +326,7 @@
 		const parsed = parsePatchFiles(filteredPatch(), session.id, true);
 		const visibleFiles = parsed.flatMap((patch) => patch.files).sort((left, right) => compareTreeOrder(left.name, right.name));
 
-		for (const host of diffHosts()) {
+		for (const host of shadowHosts()) {
 			for (const element of host.shadowRoot?.querySelectorAll<HTMLElement>('[data-line-index], [data-line-annotation], [data-gutter-buffer], [data-separator]') ?? []) element.style.removeProperty('display');
 		}
 		if (hunkRanks.length === 0) return;
@@ -401,7 +337,7 @@
 			if (!shadowRoot) continue;
 			const fileRanks = hunkRanks.filter((rank) => rank.file === file.name || rank.file === file.prevName);
 			if (fileRanks.length === 0) continue;
-			const visible = new Set<number>();
+			const visible = new SvelteSet<number>();
 			for (const hunk of file.hunks) {
 				const level = hunkRankFor(file, hunk)?.attentionLevel ?? 5;
 				if (isolatedLevel ? level !== Number(reviewLevel) : level > Number(reviewLevel)) continue;
@@ -418,13 +354,13 @@
 
 	function filteredPatch() {
 		if (hunkRanks.length === 0 && !selectedFile) return session.patch;
-		const visible = new Set(
+		const visible = new SvelteSet(
 			hunkRanks
 				.filter((rank) => isolatedLevel ? rank.attentionLevel === Number(reviewLevel) : rank.attentionLevel <= Number(reviewLevel))
 				.filter((rank) => !selectedFile || rank.file === selectedFile)
 				.map((rank) => hunkKey(rank.file, rank.oldStart, rank.oldLines, rank.newStart, rank.newLines))
 		);
-		const selected = selectedFile ? new Set([selectedFile]) : undefined;
+		const selected = selectedFile ? new SvelteSet([selectedFile]) : undefined;
 		const output: string[] = [];
 		let header: string[] = [];
 		let body: string[] = [];
@@ -488,7 +424,7 @@
 		return `${file}:${oldStart}:${oldLines}:${newStart}:${newLines}`;
 	}
 
-	function diffHosts() {
+	function shadowHosts() {
 		return [...container.querySelectorAll<HTMLElement>('.file-diff-host')].flatMap((section) => {
 			const host = diffHost(section);
 			return host ? [host] : [];
@@ -598,11 +534,13 @@
 	}
 
 	function renderMarkdown(markdown: string) {
-		return marked.parse(renderableMarkdown(markdown), { async: false, gfm: true, breaks: true }) as string;
+		return renderReviewMarkdown(markdown, session.id);
 	}
 
-	function renderableMarkdown(markdown: string) {
-		return markdown.trim().replace(/^\s*(\/[^\s)]+\.(?:png|jpe?g|gif|webp))\s*$/gim, (_match, path: string) => `![pasted image](/api/reviews/${session.id}/attachments?path=${encodeURIComponent(path)})`);
+	function hashString(value: string) {
+		let hash = 5381;
+		for (let index = 0; index < value.length; index += 1) hash = ((hash << 5) + hash) ^ value.charCodeAt(index);
+		return hash >>> 0;
 	}
 
 	function severityColor(severity: ReviewFinding['severity']) {
@@ -616,9 +554,42 @@
 	}
 </script>
 
+<svelte:window onscroll={onScroll} />
+
 {#if renderError}
 	<div class="mb-4 rounded-lg border border-danger/50 bg-danger-soft p-4 text-danger">Could not render diff: {renderError}</div>
 {/if}
 
 <div class="mb-2 text-sm text-muted">Click a line number to add a review note.</div>
-<div class="diff-container grid gap-2" bind:this={container}></div>
+<div class="diff-container grid gap-2" class:review-has-active-file={!!activeFile} bind:this={container}>
+	{#each renderedFiles as file (file.name)}
+		{@const collapsed = isFileCollapsed(file.name)}
+		{@const fileNotes = fileAnnotationsFor(file)}
+		<section class="rendered-file mb-2 scroll-mt-[5.5rem] rounded-xl border border-border bg-surface" class:review-active-file={activeFile === file.name} data-file={file.name}>
+			<div class="file-review-header sticky top-[var(--topbar-height)] z-20 flex items-center justify-between gap-3 rounded-xl border-b border-border bg-surface px-3 py-2">
+				<button type="button" class="file-collapse-toggle min-w-0 flex-1 overflow-hidden justify-start border-0 bg-transparent p-0 text-left text-sm font-medium hover:bg-transparent" onclick={() => toggleFileCollapsed(file.name)}>
+					{#if collapsed}<ChevronRight size={14} />{:else}<ChevronDown size={14} />{/if}
+					<span class="file-title-label min-w-0 truncate">{file.name}</span>
+				</button>
+				<span class="file-change-chip flex-none rounded-full px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase {fileChangeClass(file.type)}">{fileChangeLabel(file.type)}</span>
+				<div class="flex flex-none items-center gap-2">
+					<button type="button" class="whitespace-nowrap text-xs" onclick={() => onFileComment?.(file.name)}><MessageSquarePlus size={14} /><span class="file-action-label">Comment file</span></button>
+					<button type="button" class="file-reviewed-toggle whitespace-nowrap text-xs{reviewed.has(file.name) ? ' border-accent text-accent' : ''}" onclick={() => onToggleReviewed?.(file.name)}><Check size={14} /><span class="file-action-label">reviewed</span></button>
+				</div>
+			</div>
+
+			{#if fileNotes.length > 0}
+				<div class="file-annotations grid gap-2 border-b border-border p-3">
+					{#each fileNotes as annotation (annotation.id)}
+						<aside class="file-annotation grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 rounded-lg border border-accent/35 bg-accent-soft p-2" class:review-active-comment={activeCommentId === annotation.id} data-user-annotation-id={annotation.id}>
+							<button type="button" class="file-annotation-body annotation-md block w-full min-w-0 border-0 bg-transparent p-0 text-left text-sm hover:bg-transparent" onclick={() => onEditAnnotation?.(annotation)}>{@html renderMarkdown(annotation.body)}</button>
+							<button type="button" class="file-annotation-remove flex-none border-0 bg-transparent p-1 text-danger hover:bg-transparent" title="Delete annotation" aria-label="Delete annotation" onclick={() => onDeleteAnnotation?.(annotation)}><Trash2 size={14} /></button>
+						</aside>
+					{/each}
+				</div>
+			{/if}
+
+			<div class="file-diff-host" hidden={collapsed} {@attach registerDiffHost(file.name)}></div>
+		</section>
+	{/each}
+</div>
