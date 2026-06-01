@@ -5,7 +5,19 @@ export type ReviewThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' 
 export type ReviewAttentionLevel = 1 | 2 | 3 | 4 | 5;
 export type ReviewMode = 'deep-focus' | 'careful' | 'standard' | 'glance' | 'background';
 export type ReviewDiffMode = 'unstaged' | 'staged' | 'uncommitted' | 'commit' | 'branch';
+export type ReviewDiffStyle = 'split' | 'unified';
 export type UserReviewAnnotationScope = 'global' | 'file' | 'line';
+
+export interface ReviewUiSettings {
+	modelKey?: string;
+	thinkingLevel?: ReviewThinkingLevel;
+	suggestComments?: boolean;
+	autoReview?: boolean;
+	reviewLevel?: ReviewAttentionLevel;
+	isolatedLevel?: boolean;
+	diffStyle?: ReviewDiffStyle;
+	wrap?: boolean;
+}
 
 export interface ReviewFileSummary {
 	path: string;

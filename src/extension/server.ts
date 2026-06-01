@@ -10,6 +10,7 @@ import type { AddressInfo } from 'node:net';
 import { addUserAnnotation, finishReview, getReviewFeedback, getReviewSession, isReviewFinished, removeReviewFinding, removeUserAnnotation, replaceReviewDiff, reviewListenerCount, startAgentReview, subscribeToReviewSession, updateUserAnnotation } from './store.ts';
 import { buildDiffCommandFromSelection, summarizePatchFiles, type DiffMode } from './diff.ts';
 import { buildHeuristicPreReview } from './pre-review.ts';
+import { readReviewUiSettings, updateReviewUiSettings } from './settings.ts';
 
 type SvelteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 type WebHandler = { handler?: SvelteHandler; close?: () => Promise<void> | void; dev?: boolean };
@@ -43,7 +44,7 @@ async function startReviewWebServer(): Promise<ReviewWebServer> {
 
 	await new Promise<void>((resolve, reject) => {
 		server.once('error', reject);
-		server.listen(51987, '127.0.0.1', () => {
+		server.listen(0, '127.0.0.1', () => {
 			server.off('error', reject);
 			resolve();
 		});
@@ -67,6 +68,11 @@ async function startReviewWebServer(): Promise<ReviewWebServer> {
 async function handleRequest(req: IncomingMessage, res: ServerResponse, svelteHandler: SvelteHandler | undefined): Promise<void> {
 	const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
 
+	if (url.pathname === '/api/settings') {
+		handleSettingsRequest(req, res);
+		return;
+	}
+
 	if (url.pathname.startsWith('/api/reviews/')) {
 		handleApiRequest(req, res, url);
 		return;
@@ -78,6 +84,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, svelteHa
 	}
 
 	await svelteHandler(req, res);
+}
+
+function handleSettingsRequest(req: IncomingMessage, res: ServerResponse): void {
+	if (req.method === 'GET') {
+		void readReviewUiSettings().then((settings) => writeJson(res, 200, settings)).catch((error) => writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) }));
+		return;
+	}
+
+	if (req.method === 'PATCH') {
+		void readJson(req).then((body) => updateReviewUiSettings(body)).then((settings) => writeJson(res, 200, settings)).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
+		return;
+	}
+
+	writeJson(res, 405, { error: 'Method not allowed' });
 }
 
 function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): void {
@@ -105,6 +125,24 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 	if (req.method === 'GET' && tail === 'feedback') {
 		const feedback = getReviewFeedback(id);
 		writeJson(res, feedback === undefined ? 404 : 200, feedback === undefined ? { error: 'Review not found' } : { feedback });
+		return;
+	}
+
+	if (req.method === 'GET' && tail === 'refs') {
+		void (async () => {
+			const session = getReviewSession(id);
+			if (!session) {
+				writeJson(res, 404, { error: 'Review not found' });
+				return;
+			}
+			const refs = await execCommand('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'], session.cwd, 10_000);
+			if (refs.code !== 0) {
+				writeJson(res, 400, { error: refs.stderr || 'Failed to read git refs' });
+				return;
+			}
+			const values = [...new Set(refs.stdout.split('\n').map((item) => item.trim()).filter((item) => item && !item.endsWith('/HEAD')))].sort((left, right) => left.localeCompare(right));
+			writeJson(res, 200, { refs: values });
+		})().catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
 	}
 

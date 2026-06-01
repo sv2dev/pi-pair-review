@@ -1,24 +1,26 @@
 <script lang="ts">
 	import { marked } from 'marked';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { page } from '$app/stores';
 	import DiffViewer from '$lib/components/DiffViewer.svelte';
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
-	import { Check, Clipboard, Edit3, HelpCircle, MessageSquarePlus, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, MoreVertical, BookOpenText } from '@lucide/svelte';
-	import type { ReviewAttentionLevel, ReviewDiffMode, ReviewFileSummary, ReviewFinding, ReviewMode, ReviewSessionSnapshot, UserReviewAnnotation } from '$lib/shared/review';
+	import { Check, Clipboard, Edit3, HelpCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, MoreVertical, BookOpenText } from '@lucide/svelte';
+	import type { ReviewAttentionLevel, ReviewDiffMode, ReviewDiffStyle, ReviewFileSummary, ReviewFinding, ReviewMode, ReviewSessionSnapshot, ReviewUiSettings, UserReviewAnnotation } from '$lib/shared/review';
 
 	let session: ReviewSessionSnapshot | undefined;
 	let error: string | undefined;
 	let connectionWarning: string | undefined;
 	let selectedFile: string | undefined;
-	let diffStyle: 'split' | 'unified' = 'split';
+	let diffStyle: ReviewDiffStyle = 'split';
 	let wrap = false;
 	let reviewed = new Set<string>();
 	let restoredSessionId: string | undefined;
+	let leftOpen = true;
 	let rightOpen = true;
 	let annotationDraft: { id?: string; scope: 'global' | 'file' | 'line'; file?: string; line?: number; side?: 'additions' | 'deletions'; body: string } | undefined;
 	let mdEditor: { insertText: (text: string) => void; focus: () => void } | undefined;
+	let closingNotesTextarea: HTMLTextAreaElement | undefined;
 	let diffViewer: { scrollFile: (direction: 1 | -1) => void; scrollComment: (direction: 1 | -1) => void; scrollHunk: (direction: 1 | -1) => void; editActiveComment: () => boolean; currentFile: () => string | undefined } | undefined;
 	let agentModelKey = '';
 	let agentThinkingLevel = 'off';
@@ -30,15 +32,19 @@
 	let modelDialog = false;
 	let shortcutsDialog = false;
 	let agentDefaultsSessionId: string | undefined;
+	let agentDefaultsRestoringSessionId: string | undefined;
 	let finished = false;
 	let copied = false;
 	let copyFailed = false;
 	let celebrateReviewComplete = false;
+	let completionDialog = false;
+	let closingNotes = '';
 	let reviewLevel = 1;
 	let isolatedLevel = false;
 	let viewMenuOpen = false;
 	let diffSourceMode: ReviewDiffMode = 'uncommitted';
 	let diffSourceBase = 'origin/main';
+	let branchRefs: string[] = [];
 	let diffSourceLoading = false;
 	let diffSourceError: string | undefined;
 	let diffSourceSessionId: string | undefined;
@@ -65,12 +71,16 @@
 	$: reviewProgress = files.length ? Math.round((reviewedFileCount / files.length) * 100) : 0;
 	$: allFilesReviewed = files.length > 0 && reviewedFileCount >= files.length;
 	$: feedbackText = buildFeedback();
+	$: gridColumnsClass = leftOpen
+		? rightOpen ? 'lg:grid-cols-[17rem_minmax(0,1fr)_19rem]' : 'lg:grid-cols-[17rem_minmax(0,1fr)]'
+		: rightOpen ? 'lg:grid-cols-[minmax(0,1fr)_19rem]' : 'lg:grid-cols-[minmax(0,1fr)]';
 	$: if (session && restoredSessionId !== session.id) restoreReviewed(session.id);
 	$: if (session && diffSourceSessionId !== session.id) restoreDiffSource(session);
-	$: if (session && agentDefaultsSessionId !== session.id) restoreAgentDefaults(session);
+	$: if (session && agentDefaultsSessionId !== session.id && agentDefaultsRestoringSessionId !== session.id) void restoreAgentDefaults(session);
 	$: selectedAgentModel = session?.agentReview.models.find((model) => model.key === agentModelKey);
 	$: if (selectedAgentModel && !selectedAgentModel.thinkingLevels.includes(agentThinkingLevel as never)) agentThinkingLevel = selectedAgentModel.thinkingLevels[0] ?? 'off';
-	$: if (agentDefaultsSessionId) persistReviewSettings();
+	$: reviewSettingsJson = JSON.stringify({ modelKey: agentModelKey, thinkingLevel: agentThinkingLevel, suggestComments, autoReview, reviewLevel: Number(reviewLevel), isolatedLevel, diffStyle, wrap });
+	$: if (agentDefaultsSessionId) persistReviewSettings(reviewSettingsJson);
 	$: if (session && autoReviewArmed && autoStartedSessionId !== session.id && session.preReview.status !== 'running' && agentModelKey) {
 		autoStartedSessionId = session.id;
 		autoReviewArmed = false;
@@ -79,9 +89,11 @@
 	$: if (session?.preReview.status === 'done' && session.preReview.summary && summaryOpenedForSession !== session.id) {
 		summaryOpenedForSession = session.id;
 	}
+	$: if (completionDialog) void focusCompletionDialog();
 
 	onMount(() => {
 		void loadSnapshot();
+		void loadBranchRefs();
 		const onKeyDown = (event: KeyboardEvent) => handleShortcut(event);
 		window.addEventListener('keydown', onKeyDown);
 		const events = new EventSource(`/api/reviews/${reviewId}/events`);
@@ -108,28 +120,54 @@
 		}
 	}
 
-	function restoreAgentDefaults(nextSession: ReviewSessionSnapshot) {
-		agentDefaultsSessionId = nextSession.id;
-		let stored: Partial<{ modelKey: string; thinkingLevel: string; suggestComments: boolean; autoReview: boolean; reviewLevel: number | string; isolatedLevel: boolean }> = {};
-		try { stored = JSON.parse(localStorage.getItem('pi-pair-review:settings') ?? '{}') as typeof stored; } catch { stored = {}; }
+	async function restoreAgentDefaults(nextSession: ReviewSessionSnapshot) {
+		agentDefaultsRestoringSessionId = nextSession.id;
+		const stored = await loadReviewSettings();
 		agentModelKey = stored.modelKey && nextSession.agentReview.models.some((model) => model.key === stored.modelKey) ? stored.modelKey : nextSession.agentReview.defaultModelKey ?? nextSession.agentReview.models[0]?.key ?? '';
 		agentThinkingLevel = stored.thinkingLevel ?? nextSession.agentReview.defaultThinkingLevel;
 		suggestComments = stored.suggestComments ?? true;
 		autoReview = stored.autoReview ?? false;
 		autoReviewArmed = autoReview;
-		reviewLevel = 2;
+		reviewLevel = stored.reviewLevel ?? 2;
 		isolatedLevel = stored.isolatedLevel ?? true;
+		diffStyle = stored.diffStyle ?? 'split';
+		wrap = stored.wrap ?? false;
+		agentDefaultsSessionId = nextSession.id;
 	}
 
-	function persistReviewSettings() {
-		localStorage.setItem('pi-pair-review:settings', JSON.stringify({ modelKey: agentModelKey, thinkingLevel: agentThinkingLevel, suggestComments, autoReview, reviewLevel: Number(reviewLevel), isolatedLevel }));
+	async function loadReviewSettings(): Promise<ReviewUiSettings> {
+		try {
+			const response = await fetch('/api/settings');
+			return response.ok ? ((await response.json()) as ReviewUiSettings) : {};
+		} catch {
+			return {};
+		}
+	}
+
+	function persistReviewSettings(settingsJson = reviewSettingsJson) {
+		void fetch('/api/settings', {
+			method: 'PATCH',
+			headers: { 'content-type': 'application/json' },
+			body: settingsJson
+		});
 	}
 
 	function restoreDiffSource(nextSession: ReviewSessionSnapshot) {
 		diffSourceSessionId = nextSession.id;
 		diffSourceMode = nextSession.diffMode ?? 'uncommitted';
-		diffSourceBase = nextSession.diffBase ?? 'origin/main';
+		diffSourceBase = nextSession.diffBase ?? branchRefs[0] ?? 'origin/main';
 		diffSourceError = undefined;
+	}
+
+	async function loadBranchRefs() {
+		try {
+			const response = await fetch(`/api/reviews/${reviewId}/refs`);
+			if (!response.ok) return;
+			branchRefs = ((await response.json()) as { refs: string[] }).refs;
+			if (!diffSourceBase && branchRefs[0]) diffSourceBase = branchRefs[0];
+		} catch {
+			branchRefs = [];
+		}
 	}
 
 	function restoreReviewed(id: string) {
@@ -154,7 +192,8 @@
 
 	function celebrateCompletion() {
 		celebrateReviewComplete = true;
-		setTimeout(() => (celebrateReviewComplete = false), 1600);
+		completionDialog = true;
+		setTimeout(() => (celebrateReviewComplete = false), 2200);
 	}
 
 	async function saveAnnotation() {
@@ -193,8 +232,24 @@
 		});
 	}
 
+	function handleDiffModeChange(event: Event) {
+		diffSourceMode = (event.currentTarget as HTMLSelectElement).value as ReviewDiffMode;
+		if (diffSourceMode === 'branch' && (!diffSourceBase || diffSourceBase === session?.diffBase)) diffSourceBase = session?.diffBase ?? branchRefs[0] ?? 'origin/main';
+		void changeDiffSource();
+	}
+
+	function handleBranchRefChange(event: Event) {
+		diffSourceBase = (event.currentTarget as HTMLSelectElement).value;
+		void changeDiffSource();
+	}
+
 	async function changeDiffSource() {
-		if ((userAnnotations.length > 0 || findings.length > 0 || reviewed.size > 0) && !confirm('Change diff source? Existing annotations, highlights, and reviewed markers for this session will be cleared.')) return;
+		if (!session || diffSourceLoading || session.preReview.status === 'running') return;
+		if (diffSourceMode === session.diffMode && (diffSourceMode !== 'branch' || diffSourceBase === session.diffBase)) return;
+		if ((userAnnotations.length > 0 || findings.length > 0 || reviewed.size > 0) && !confirm('Change diff source? Existing annotations, highlights, and reviewed markers for this session will be cleared.')) {
+			restoreDiffSource(session);
+			return;
+		}
 		diffSourceLoading = true;
 		diffSourceError = undefined;
 		try {
@@ -262,12 +317,18 @@
 	function handleShortcut(event: KeyboardEvent) {
 		const target = event.target as HTMLElement | null;
 		const inEditor = target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT' || target?.tagName === 'SELECT';
-		if (event.key === 'Escape' && (annotationDraft || modelDialog || summaryDialog || shortcutsDialog)) {
+		if (event.key === 'Escape' && (annotationDraft || modelDialog || summaryDialog || shortcutsDialog || completionDialog)) {
 			event.preventDefault();
 			annotationDraft = undefined;
 			modelDialog = false;
 			summaryDialog = false;
 			shortcutsDialog = false;
+			completionDialog = false;
+			return;
+		}
+		if (completionDialog && (event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+			event.preventDefault();
+			void finish();
 			return;
 		}
 		if (annotationDraft && ((event.ctrlKey && event.key.toLowerCase() === 's') || (event.metaKey && event.key === 'Enter'))) {
@@ -324,7 +385,7 @@
 		if (event.key.toLowerCase() === 'v') {
 			event.preventDefault();
 			const file = currentFileForAction();
-			if (file && !reviewed.has(file)) toggleReviewed(file);
+			if (file) toggleReviewed(file);
 			return;
 		}
 		if (event.key.toLowerCase() === 'f') {
@@ -333,9 +394,14 @@
 			if (file) annotationDraft = { scope: 'file', file, body: '' };
 			return;
 		}
-		if (event.ctrlKey && event.altKey && event.key.toLowerCase() === 'b') {
+		if (event.key === 'B') {
 			event.preventDefault();
 			rightOpen = !rightOpen;
+			return;
+		}
+		if (event.key.toLowerCase() === 'b') {
+			event.preventDefault();
+			leftOpen = !leftOpen;
 			return;
 		}
 		if (event.key.toLowerCase() === 'o') {
@@ -513,6 +579,7 @@
 		const lines: string[] = [];
 		for (const finding of findings) lines.push(formatFeedbackLine(finding.file, finding.line, finding.title));
 		for (const annotation of userAnnotations) lines.push(formatFeedbackLine(annotation.file, annotation.line, annotation.body));
+		if (closingNotes.trim()) lines.push('', closingNotes.trim());
 		return lines.join('\n');
 	}
 
@@ -529,6 +596,11 @@
 		return markdown.trim().replace(/^\s*(\/[^\s)]+\.(?:png|jpe?g|gif|webp))\s*$/gim, (_match, path: string) => `![pasted image](/api/reviews/${reviewId}/attachments?path=${encodeURIComponent(path)})`);
 	}
 
+	async function focusCompletionDialog() {
+		await tick();
+		closingNotesTextarea?.focus();
+	}
+
 	function backdropClick(event: MouseEvent, close: () => void) {
 		if (event.target === event.currentTarget) close();
 	}
@@ -539,7 +611,7 @@
 {:else if !session}
 	<main class="grid min-h-screen place-items-center p-8"><div class="rounded-xl border border-border bg-surface-2 px-5 py-4 text-muted">Loading review…</div></main>
 {:else}
-	<div class="grid min-h-screen grid-cols-1 grid-rows-[auto_1fr] {rightOpen ? 'lg:grid-cols-[17rem_minmax(0,1fr)_19rem]' : 'lg:grid-cols-[17rem_minmax(0,1fr)]'}">
+	<div class="grid min-h-screen grid-cols-1 grid-rows-[auto_1fr] {gridColumnsClass}">
 		<header class="sticky top-0 z-20 col-span-full flex items-center justify-between gap-4 border-b border-border bg-bg/95 px-4 backdrop-blur-sm relative" style="min-height: var(--topbar-height)">
 			<div class="absolute bottom-0 left-0 h-0.5 w-full overflow-hidden bg-surface-2"><div class="review-progress h-full bg-accent" class:review-progress-complete={celebrateReviewComplete} style={`width: ${reviewProgress}%`}></div></div>
 			<div class="min-w-0">
@@ -548,8 +620,9 @@
 			</div>
 			<div class="flex items-center gap-2">
 				<button title="Copy feedback" on:click={copyFeedback}><Clipboard size={15} />{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</button>
-				<button class={allFilesReviewed ? 'border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90' : 'border-border-strong bg-surface-2 text-muted hover:bg-surface-hover'} title="Insert feedback (W or Cmd/Ctrl+Enter)" on:click={() => finish()}><Check size={15} />Insert feedback</button>
-				<button title="Toggle right sidebar (Ctrl+Alt+B)" on:click={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}{rightOpen ? 'Hide' : 'Show'} annotations</button>
+				<button class={allFilesReviewed ? 'border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90' : ''} title="Insert feedback (W or Cmd/Ctrl+Enter)" on:click={() => finish()}><Check size={15} />Insert feedback</button>
+				<button title="Toggle left sidebar (B)" on:click={() => (leftOpen = !leftOpen)}>{#if leftOpen}<PanelLeftClose size={15} />{:else}<PanelLeftOpen size={15} />{/if}{leftOpen ? 'Hide' : 'Show'} files</button>
+				<button title="Toggle right sidebar (Shift+B)" on:click={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}{rightOpen ? 'Hide' : 'Show'} annotations</button>
 				<div class="relative">
 					<button class="w-8 px-0" title="View options" on:click={() => (viewMenuOpen = !viewMenuOpen)}><MoreVertical size={17} /></button>
 					{#if viewMenuOpen}
@@ -563,12 +636,13 @@
 			</div>
 		</header>
 
+		{#if leftOpen}
 		<aside class="grid content-start gap-2 border-b border-border bg-bg p-2.5 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-auto lg:border-b-0 lg:border-r">
 			{#if connectionWarning}<section class="rounded-lg border border-warning/40 bg-warning-soft p-2.5 text-sm text-warning">{connectionWarning}</section>{/if}
-			<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+			<section class="grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5">
 				<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Diff source</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{session.diffMode ?? 'diff'}</span></div>
 				<label class="grid gap-1 text-sm text-muted">Review
-					<select bind:value={diffSourceMode} disabled={diffSourceLoading || session.preReview.status === 'running'}>
+					<select bind:value={diffSourceMode} disabled={diffSourceLoading || session.preReview.status === 'running'} on:change={handleDiffModeChange}>
 						<option value="unstaged">Unstaged changes</option>
 						<option value="staged">Staged changes</option>
 						<option value="uncommitted">Uncommitted changes</option>
@@ -576,23 +650,24 @@
 						<option value="branch">Branch vs ref</option>
 					</select>
 				</label>
-				{#if diffSourceMode === 'branch'}<label class="grid gap-1 text-sm text-muted">Base ref <input bind:value={diffSourceBase} disabled={diffSourceLoading || session.preReview.status === 'running'} placeholder="origin/main" /></label>{/if}
-				<button type="button" disabled={diffSourceLoading || session.preReview.status === 'running'} on:click={changeDiffSource}>{diffSourceLoading ? 'Loading…' : 'Use source'}</button>
+				{#if diffSourceMode === 'branch'}<label class="grid gap-1 text-sm text-muted">Base ref <select bind:value={diffSourceBase} disabled={diffSourceLoading || session.preReview.status === 'running'} on:change={handleBranchRefChange}>{#if diffSourceBase && !branchRefs.includes(diffSourceBase)}<option value={diffSourceBase}>{diffSourceBase}</option>{/if}{#each branchRefs as ref}<option value={ref}>{ref}</option>{/each}{#if branchRefs.length === 0 && !diffSourceBase}<option value="origin/main">origin/main</option>{/if}</select></label>{/if}
+				{#if diffSourceLoading}<p class="text-sm text-muted">Loading source…</p>{/if}
 				{#if diffSourceError}<p class="text-sm text-danger">{diffSourceError}</p>{/if}
 			</section>
-			<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+			<section class="grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5">
 				<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{reviewedFileCount}/{files.length}</span></div>
 				<FileTreeViewer files={visibleFiles} {selectedFile} {activeFile} {reviewed} {counts} on:select={(event) => (selectedFile = event.detail)} on:toggleReviewed={(event) => toggleReviewed(event.detail)} />
 			</section>
 		</aside>
+		{/if}
 
 		<main class="min-w-0 px-3 py-3 lg:pr-0" style="scroll-padding-top: calc(var(--topbar-height) + 1rem)">
 			<DiffViewer bind:this={diffViewer} {session} {findings} {hunkRanks} {reviewLevel} {isolatedLevel} {reviewed} {selectedFile} {targetFindingId} {targetAnnotationId} {diffStyle} {wrap} on:activeChange={(event) => { activeFile = event.detail.file; activeCommentId = event.detail.commentId; }} on:annotate={(event) => startLineAnnotation(event.detail)} on:fileComment={(event) => (annotationDraft = { scope: 'file', file: event.detail, body: '' })} on:toggleReviewed={(event) => toggleReviewed(event.detail)} on:editAnnotation={(event) => editAnnotation(event.detail)} on:deleteAnnotation={(event) => removeAnnotation(event.detail)} />
 		</main>
 
 		{#if rightOpen}
-			<aside class="grid content-start gap-2 border-t border-border bg-bg p-2.5 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-auto lg:border-t-0 lg:border-l">
-				<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+			<aside class="grid content-start gap-2 border-t border-border bg-bg p-2.5 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] min-w-0 overflow-x-hidden lg:overflow-y-auto lg:border-t-0 lg:border-l">
+				<section class="grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5">
 					<button class="flex w-full items-center justify-between gap-3 border-0 bg-transparent p-0 hover:bg-transparent" on:click={() => (aiOpen = !aiOpen)}><h2 class="text-[0.85rem] font-semibold">AI review</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{aiOpen ? '▾' : '▸'} {session.preReview.status === 'done' ? '✓ done' : session.preReview.status}</span></button>
 					{#if aiOpen}
 						<div class="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
@@ -623,11 +698,11 @@
 						{#if session.preReview.error}<p class="text-sm text-muted">{session.preReview.error}</p>{/if}
 					{/if}
 				</section>
-				<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+				<section class="grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5">
 					<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">Agent annotations</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{findings.length}</span></div>
 					{#if findings.length === 0}<p class="text-sm text-muted">No highlights yet.</p>{:else}<div class="grid gap-2">{#each findings as finding}<div class="grid gap-1.5 rounded-lg p-2 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-1.5"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" on:click={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-2"><span class="{severityClass(finding)} rounded-full px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase">L{finding.attentionLevel} · {finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none rounded-full border-0 bg-transparent px-1 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" on:click={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" on:click={() => selectFinding(finding)}><div class="rendered-markdown text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
 				</section>
-				<section class="grid gap-2 rounded-lg border border-border bg-surface p-2.5">
+				<section class="grid min-w-0 gap-2 overflow-hidden rounded-lg border border-border bg-surface p-2.5">
 					<div class="sticky top-[calc(var(--topbar-height)+0.5rem)] z-10 -mx-2.5 -mt-2.5 grid gap-2 border-b border-border bg-surface p-2.5">
 						<div class="flex items-center justify-between gap-3"><h2 class="text-[0.85rem] font-semibold">User annotations</h2><span class="rounded-full bg-code px-1.5 py-0.5 text-[0.66rem] font-semibold uppercase text-muted">{userAnnotations.length}</span></div>
 						<button class="w-full justify-start" title="Comment overall (O)" on:click={() => (annotationDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={15} />Comment overall</button>
@@ -676,6 +751,21 @@
 	</div>
 {/if}
 
+{#if completionDialog}
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+	<div class="modal-backdrop fixed inset-0 z-40 grid place-items-center p-4" on:click={(event) => backdropClick(event, () => (completionDialog = false))}>
+		<div class="confetti-layer" aria-hidden="true">{#each Array(24) as _}<i></i>{/each}</div>
+		<div class="relative z-10 grid w-[min(34rem,calc(100vw-2rem))] gap-3 rounded-xl border border-accent/50 bg-surface p-5 shadow-[0_16px_48px_var(--shadow)]">
+			<h2 class="text-[1rem] font-semibold">Review complete</h2>
+			<p class="text-sm text-muted">All files are marked reviewed. Add optional closing notes before inserting feedback.</p>
+			<label class="grid gap-1.5 text-sm text-muted">Closing notes
+				<textarea bind:this={closingNotesTextarea} bind:value={closingNotes} rows="5" placeholder="Optional notes to append below annotations…"></textarea>
+			</label>
+			<div class="flex justify-end gap-2 pt-1"><button type="button" on:click={() => (completionDialog = false)}>Keep reviewing</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" type="button" on:click={() => finish()}><Check size={15} />Insert feedback</button></div>
+		</div>
+	</div>
+{/if}
+
 {#if shortcutsDialog}
 	<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 	<div class="modal-backdrop fixed inset-0 z-40 grid place-items-center p-4" on:click={(event) => backdropClick(event, () => (shortcutsDialog = false))}>
@@ -687,13 +777,15 @@
 				<dt class="mt-3 border-t border-border pt-3 text-xs font-semibold uppercase text-muted">Diff view</dt>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">Shift+↓ / ↑</kbd><dd class="text-sm text-muted">Next / previous comment</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">Enter</kbd><dd class="text-sm text-muted">Edit highlighted user comment</dd></div>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">V</kbd><dd class="text-sm text-muted">Mark current file reviewed</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">V</kbd><dd class="text-sm text-muted">Toggle current file reviewed</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">F</kbd><dd class="text-sm text-muted">Add file comment</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">Opt+↓ / ↑</kbd><dd class="text-sm text-muted">Next / previous hunk</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">O</kbd><dd class="text-sm text-muted">Comment overall</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">S</kbd><dd class="text-sm text-muted">Show agent summary</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">I</kbd><dd class="text-sm text-muted">Toggle isolated review mode</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">+ / −</kbd><dd class="text-sm text-muted">Change review mode</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">B</kbd><dd class="text-sm text-muted">Toggle files sidebar</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">Shift+B</kbd><dd class="text-sm text-muted">Toggle annotations sidebar</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">W</kbd><dd class="text-sm text-muted">Insert feedback</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">Cmd/Ctrl+Enter</kbd><dd class="text-sm text-muted">Insert feedback</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-3"><kbd class="justify-self-start rounded-md border border-border-strong bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">?</kbd><dd class="text-sm text-muted">Show keyboard shortcuts</dd></div>
