@@ -6,7 +6,7 @@ export type ReviewAttentionLevel = 1 | 2 | 3 | 4 | 5;
 export type ReviewMode = 'deep-focus' | 'careful' | 'standard' | 'glance' | 'background';
 export type ReviewDiffMode = 'unstaged' | 'staged' | 'uncommitted' | 'commit' | 'branch';
 export type ReviewDiffStyle = 'split' | 'unified';
-export type UserReviewAnnotationScope = 'global' | 'file' | 'line';
+export type UserReviewCommentScope = 'global' | 'file' | 'line';
 
 export interface ReviewUiSettings {
 	modelKey?: string;
@@ -52,9 +52,9 @@ export interface ReviewHunkRank {
 	signals?: string[];
 }
 
-export interface UserReviewAnnotation {
+export interface UserReviewComment {
 	id: string;
-	scope: UserReviewAnnotationScope;
+	scope: UserReviewCommentScope;
 	file?: string;
 	line?: number;
 	side?: ReviewSide;
@@ -83,7 +83,7 @@ export interface ReviewSessionSnapshot {
 	diffBase?: string;
 	patch: string;
 	files: ReviewFileSummary[];
-	userAnnotations: UserReviewAnnotation[];
+	userComments: UserReviewComment[];
 	agentReview: {
 		models: ReviewAgentModelOption[];
 		defaultModelKey?: string;

@@ -1,5 +1,5 @@
 import { isReviewableImagePath } from '$lib/shared/images';
-import type { ReviewAttentionLevel, ReviewFileSummary, ReviewFinding, ReviewHunkRank, ReviewMode, UserReviewAnnotation } from '$lib/shared/review';
+import type { ReviewAttentionLevel, ReviewFileSummary, ReviewFinding, ReviewHunkRank, ReviewMode, UserReviewComment } from '$lib/shared/review';
 
 export interface ReviewModeOption {
 	level: ReviewAttentionLevel;
@@ -65,10 +65,10 @@ export function compareTreeOrder(leftPath: string, rightPath: string) {
 	return 0;
 }
 
-export function buildReviewFeedback(findings: ReviewFinding[], annotations: UserReviewAnnotation[], closingNotes: string) {
+export function buildReviewFeedback(findings: ReviewFinding[], comments: UserReviewComment[], closingNotes: string) {
 	const lines: string[] = [];
 	for (const finding of findings) lines.push(formatFeedbackLine(finding.file, finding.line, finding.title));
-	for (const annotation of annotations) lines.push(formatFeedbackLine(annotation.file, annotation.line, annotation.body, annotation.endLine));
+	for (const comment of comments) lines.push(formatFeedbackLine(comment.file, comment.line, comment.body, comment.endLine));
 	if (closingNotes.trim()) lines.push('', closingNotes.trim());
 	return lines.join('\n');
 }

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AddressInfo } from 'node:net';
-import { addUserAnnotation, finishReview, getReviewFeedback, getReviewSession, isReviewFinished, removeReviewFinding, removeUserAnnotation, replaceReviewDiff, reviewListenerCount, startAgentReview, subscribeToReviewSession, updateUserAnnotation } from './store.ts';
+import { addUserComment, finishReview, getReviewFeedback, getReviewSession, isReviewFinished, removeReviewFinding, removeUserComment, replaceReviewDiff, reviewListenerCount, startAgentReview, subscribeToReviewSession, updateUserComment } from './store.ts';
 import { buildDiffCommandFromSelection, summarizePatchFiles, type DiffMode } from './diff.ts';
 import { buildHeuristicPreReview } from './pre-review.ts';
 import { readReviewUiSettings, updateReviewUiSettings } from './settings.ts';
@@ -295,21 +295,21 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 		return;
 	}
 
-	if (req.method === 'PATCH' && tail === 'annotations' && itemId) {
+	if (req.method === 'PATCH' && tail === 'comments' && itemId) {
 		void readJson(req).then((body) => {
-			const annotationBody = typeof (body as Record<string, unknown>).body === 'string' ? (body as Record<string, string>).body.trim() : '';
-			if (!annotationBody) {
-				writeJson(res, 400, { error: 'Missing annotation body' });
+			const commentBody = typeof (body as Record<string, unknown>).body === 'string' ? (body as Record<string, string>).body.trim() : '';
+			if (!commentBody) {
+				writeJson(res, 400, { error: 'Missing comment body' });
 				return;
 			}
-			const annotation = updateUserAnnotation(id, itemId, annotationBody);
-			writeJson(res, annotation ? 200 : 404, annotation ?? { error: 'Review not found' });
+			const comment = updateUserComment(id, itemId, commentBody);
+			writeJson(res, comment ? 200 : 404, comment ?? { error: 'Review not found' });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
 	}
 
-	if (req.method === 'DELETE' && tail === 'annotations' && itemId) {
-		writeJson(res, removeUserAnnotation(id, itemId) ? 200 : 404, { ok: true });
+	if (req.method === 'DELETE' && tail === 'comments' && itemId) {
+		writeJson(res, removeUserComment(id, itemId) ? 200 : 404, { ok: true });
 		return;
 	}
 
@@ -318,7 +318,7 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 		return;
 	}
 
-	if (req.method === 'POST' && tail === 'annotations') {
+	if (req.method === 'POST' && tail === 'comments') {
 		void readJson(req).then((body) => {
 			const value = body as Record<string, unknown>;
 			const scope = value.scope === 'global' || value.scope === 'file' || value.scope === 'line' ? value.scope : 'line';
@@ -327,13 +327,13 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 			const side = value.side === 'deletions' ? 'deletions' : value.side === 'additions' ? 'additions' : undefined;
 			const endLine = typeof value.endLine === 'number' && Number.isFinite(value.endLine) ? value.endLine : undefined;
 			const endSide = value.endSide === 'deletions' ? 'deletions' : value.endSide === 'additions' ? 'additions' : undefined;
-			const annotationBody = typeof value.body === 'string' ? value.body.trim() : '';
-			if (!annotationBody || (scope !== 'global' && !file) || (scope === 'line' && (!line || !side))) {
-				writeJson(res, 400, { error: 'Missing annotation fields' });
+			const commentBody = typeof value.body === 'string' ? value.body.trim() : '';
+			if (!commentBody || (scope !== 'global' && !file) || (scope === 'line' && (!line || !side))) {
+				writeJson(res, 400, { error: 'Missing comment fields' });
 				return;
 			}
-			const annotation = addUserAnnotation(id, { scope, file, line, side, endLine, endSide, body: annotationBody });
-			writeJson(res, annotation ? 200 : 404, annotation ?? { error: 'Review not found' });
+			const comment = addUserComment(id, { scope, file, line, side, endLine, endSide, body: commentBody });
+			writeJson(res, comment ? 200 : 404, comment ?? { error: 'Review not found' });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
 	}

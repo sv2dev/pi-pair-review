@@ -5,14 +5,15 @@
 	import { renderReviewMarkdown } from '$lib/client/review-markdown';
 	import { availableReviewLevelOptions, buildReviewFeedback, filterFilesForReviewLevel, modeForLevel, reviewModeOption, sortFilesForTree } from '$lib/client/review-ui';
 	import { isReviewableImagePath } from '$lib/shared/images';
+	import CircularCheckProgress from '$lib/components/CircularCheckProgress.svelte';
 	import DiffViewer from '$lib/components/DiffViewer.svelte';
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
 	import { Check, ChevronDown, ChevronRight, Clipboard, Edit3, HelpCircle, LoaderCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, BookOpenText } from '@lucide/svelte';
 	import type { SelectedLineRange } from '@pierre/diffs';
-	import type { ReviewAttentionLevel, ReviewDiffMode, ReviewDiffStyle, ReviewFinding, ReviewSessionSnapshot, ReviewUiSettings, UserReviewAnnotation } from '$lib/shared/review';
+	import type { ReviewAttentionLevel, ReviewDiffMode, ReviewDiffStyle, ReviewFinding, ReviewSessionSnapshot, ReviewUiSettings, UserReviewComment } from '$lib/shared/review';
 
-	type AnnotationDraft = { id?: string; scope: 'global' | 'file' | 'line'; file?: string; line?: number; side?: 'additions' | 'deletions'; endLine?: number; endSide?: 'additions' | 'deletions'; body: string };
+	type CommentDraft = { id?: string; scope: 'global' | 'file' | 'line'; file?: string; line?: number; side?: 'additions' | 'deletions'; endLine?: number; endSide?: 'additions' | 'deletions'; body: string };
 	type MarkdownEditorApi = { insertText: (text: string) => void; focus: () => void };
 	type DiffViewerApi = { scrollFile: (direction: 1 | -1) => void; scrollFileAfter: (file: string) => void; scrollComment: (direction: 1 | -1) => void; scrollHunk: (direction: 1 | -1) => void; editActiveComment: () => boolean; currentFile: () => string | undefined };
 	type StoredReviewed = { version: 2; entries: string[] };
@@ -28,7 +29,7 @@
 	let restoredSessionId = $state<string | undefined>();
 	let leftOpen = $state(true);
 	let rightOpen = $state(true);
-	let annotationDraft = $state<AnnotationDraft | undefined>();
+	let commentDraft = $state<CommentDraft | undefined>();
 	let mdEditor = $state<MarkdownEditorApi | undefined>();
 	let closingNotesTextarea = $state<HTMLTextAreaElement | undefined>();
 	let diffViewer = $state<DiffViewerApi | undefined>();
@@ -40,6 +41,11 @@
 	let autoStartedSessionId = $state<string | undefined>();
 	let aiOpen = $state(false);
 	let reviewModeOpen = $state(false);
+	let agentCommentsOpen = $state(false);
+	let userCommentsOpen = $state(false);
+	let commentOpenSessionId = $state<string | undefined>();
+	let lastFindingCount = $state(0);
+	let lastUserCommentCount = $state(0);
 	let modelDialog = $state(false);
 	let shortcutsDialog = $state(false);
 	let agentDefaultsSessionId = $state<string | undefined>();
@@ -64,10 +70,20 @@
 	let summaryDialog = $state(false);
 	let summaryOpenedForSession = $state<string | undefined>();
 	let targetFindingId = $state<string | undefined>();
-	let targetAnnotationId = $state<string | undefined>();
+	let targetCommentId = $state<string | undefined>();
 	let highlightedEntryId = $state<string | undefined>();
 	let activeFile = $state<string | undefined>();
-	let lastLineAnnotationTarget = $state<{ scope: 'line'; file: string; line: number; side: 'additions' | 'deletions'; endLine?: number; endSide?: 'additions' | 'deletions' } | undefined>();
+	let lastLineCommentTarget = $state<{ scope: 'line'; file: string; line: number; side: 'additions' | 'deletions'; endLine?: number; endSide?: 'additions' | 'deletions' } | undefined>();
+
+	const confettiPieces = Array.from({ length: 64 }, (_, index) => {
+		const angle = -150 + (300 / 63) * index;
+		const distance = 34 + ((index * 17) % 38);
+		const radians = angle * Math.PI / 180;
+		return {
+			index,
+			style: `--x: ${Math.cos(radians) * distance}; --y: ${Math.sin(radians) * distance}; --r: ${180 + index * 47}deg; --delay: ${(index % 14) * 0.016}s; --s: ${0.72 + (index % 6) * 0.11};`
+		};
+	});
 
 	let reviewId = $derived(page.params.id);
 	let files = $derived(session?.files ?? []);
@@ -77,14 +93,16 @@
 	let reviewLevelOptions = $derived(availableReviewLevelOptions(hunkRanks));
 	let currentReviewMode = $derived(reviewLevelOptions.find((option) => option.level === Number(reviewLevel)) ?? reviewModeOption(modeForLevel(reviewLevel), reviewLevel));
 	let visibleFiles = $derived(sortFilesForTree(filterFilesForReviewLevel(files, hunkRanks, reviewLevel, isolatedLevel)));
-	let userAnnotations = $derived(session?.userAnnotations ?? []);
+	let userComments = $derived(session?.userComments ?? []);
 	let reviewedFiles = $derived(new SvelteSet(files.filter((file) => isFileReviewed(file.path)).map((file) => file.path)));
 	let reviewedFileCount = $derived(visibleFiles.filter((file) => reviewedFiles.has(file.path)).length);
 	let reviewUnits = $derived(allReviewUnits());
 	let reviewedReviewUnitCount = $derived(reviewUnits.filter((unit) => reviewed.has(reviewedKey(unit.file, unit.level))).length);
 	let reviewProgress = $derived(reviewUnits.length ? Math.round((reviewedReviewUnitCount / reviewUnits.length) * 100) : 0);
-	let allFilesReviewed = $derived(reviewUnits.length > 0 && reviewedReviewUnitCount >= reviewUnits.length);
-	let feedbackText = $derived(buildReviewFeedback(findings, userAnnotations, closingNotes));
+	let reviewScopeComplete = $derived(reviewUnits.length > 0 && reviewedReviewUnitCount >= reviewUnits.length);
+	let fileReviewUnits = $derived(fileReviewUnitMap());
+	let fileReviewProgress = $derived(new Map([...fileReviewUnits].map(([file, units]) => [file, units.total ? Math.round((units.reviewed / units.total) * 100) : 0] as const)));
+	let feedbackText = $derived(buildReviewFeedback(findings, userComments, closingNotes));
 	let gridColumnsClass = $derived(leftOpen
 		? rightOpen ? 'lg:grid-cols-[17rem_minmax(0,1fr)_19rem]' : 'lg:grid-cols-[17rem_minmax(0,1fr)]'
 		: rightOpen ? 'lg:grid-cols-[minmax(0,1fr)_19rem]' : 'lg:grid-cols-[minmax(0,1fr)]');
@@ -141,6 +159,22 @@
 
 	$effect(() => {
 		if (completionDialog) void focusCompletionDialog();
+	});
+
+	$effect(() => {
+		const id = session?.id;
+		if (id !== commentOpenSessionId) {
+			commentOpenSessionId = id;
+			lastFindingCount = findings.length;
+			lastUserCommentCount = userComments.length;
+			agentCommentsOpen = false;
+			userCommentsOpen = false;
+			return;
+		}
+		if (lastFindingCount === 0 && findings.length > 0) agentCommentsOpen = true;
+		if (lastUserCommentCount === 0 && userComments.length > 0) userCommentsOpen = true;
+		lastFindingCount = findings.length;
+		lastUserCommentCount = userComments.length;
 	});
 
 	$effect(() => {
@@ -259,17 +293,24 @@
 	}
 
 	function toggleReviewed(file: string) {
-		const wasComplete = allFilesReviewed;
+		const activeBeforeToggle = currentFileForAction();
 		const levels = reviewedLevelsForFile(file);
 		const isReviewed = levels.length > 0 && levels.every((level) => reviewed.has(reviewedKey(file, level)));
-		for (const level of levels) {
-			const key = reviewedKey(file, level);
-			if (isReviewed) reviewed.delete(key);
-			else reviewed.add(key);
+		setFilesReviewed([file], !isReviewed);
+		if (!isReviewed && file === activeBeforeToggle) advanceAfterReviewed(file);
+	}
+
+	function setFilesReviewed(targetFiles: string[], nextReviewed: boolean) {
+		const wasComplete = reviewScopeComplete;
+		for (const file of targetFiles) {
+			for (const level of reviewedLevelsForFile(file)) {
+				const key = reviewedKey(file, level);
+				if (nextReviewed) reviewed.add(key);
+				else reviewed.delete(key);
+			}
 		}
 		if (!wasComplete && allReviewUnits().every((unit) => reviewed.has(reviewedKey(unit.file, unit.level)))) celebrateCompletion();
 		persistReviewed();
-		if (!isReviewed) advanceAfterReviewed(file);
 	}
 
 	async function advanceAfterReviewed(file: string) {
@@ -326,6 +367,14 @@
 		return levels.sort((left, right) => left - right);
 	}
 
+	function fileReviewUnitMap() {
+		return new Map(files.map((file) => {
+			const levels = reviewedLevelsForFile(file.path);
+			const done = levels.filter((level) => reviewed.has(reviewedKey(file.path, level))).length;
+			return [file.path, { reviewed: done, total: levels.length }] as const;
+		}));
+	}
+
 	function isUnrankedImageFile(file: string) {
 		const summary = files.find((item) => item.path === file || item.previousPath === file);
 		if (!summary || (!isReviewableImagePath(summary.path) && !isReviewableImagePath(summary.previousPath))) return false;
@@ -366,25 +415,25 @@
 		setTimeout(() => (celebrateReviewComplete = false), 2200);
 	}
 
-	async function saveAnnotation() {
-		if (!annotationDraft?.body.trim()) return;
-		const draft = { ...annotationDraft, body: annotationDraft.body.trim() };
+	async function saveComment() {
+		if (!commentDraft?.body.trim()) return;
+		const draft = { ...commentDraft, body: commentDraft.body.trim() };
 		const previousSession = session;
-		annotationDraft = undefined;
+		commentDraft = undefined;
 		try {
 			if (draft.id) {
-				if (session) session = { ...session, userAnnotations: session.userAnnotations.map((item) => (item.id === draft.id ? { ...item, body: draft.body } : item)) };
-				const annotation = await requestJson<UserReviewAnnotation>(`/api/reviews/${reviewId}/annotations/${draft.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body: draft.body }) });
-				if (session) session = { ...session, userAnnotations: session.userAnnotations.map((item) => (item.id === annotation.id ? annotation : item)) };
+				if (session) session = { ...session, userComments: session.userComments.map((item) => (item.id === draft.id ? { ...item, body: draft.body } : item)) };
+				const comment = await requestJson<UserReviewComment>(`/api/reviews/${reviewId}/comments/${draft.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body: draft.body }) });
+				if (session) session = { ...session, userComments: session.userComments.map((item) => (item.id === comment.id ? comment : item)) };
 				return;
 			}
-			const optimistic: UserReviewAnnotation = { ...draft, id: `local-${crypto.randomUUID()}`, createdAt: new Date().toISOString() };
-			if (session) session = { ...session, userAnnotations: [...session.userAnnotations, optimistic] };
-			const annotation = await requestJson<UserReviewAnnotation>(`/api/reviews/${reviewId}/annotations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draft) });
-			if (session) session = { ...session, userAnnotations: session.userAnnotations.map((item) => (item.id === optimistic.id ? annotation : item)) };
+			const optimistic: UserReviewComment = { ...draft, id: `local-${crypto.randomUUID()}`, createdAt: new Date().toISOString() };
+			if (session) session = { ...session, userComments: [...session.userComments, optimistic] };
+			const comment = await requestJson<UserReviewComment>(`/api/reviews/${reviewId}/comments`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draft) });
+			if (session) session = { ...session, userComments: session.userComments.map((item) => (item.id === optimistic.id ? comment : item)) };
 		} catch (saveError) {
 			session = previousSession;
-			annotationDraft = draft;
+			commentDraft = draft;
 			connectionWarning = saveError instanceof Error ? saveError.message : String(saveError);
 		}
 	}
@@ -400,11 +449,11 @@
 		}
 	}
 
-	async function removeAnnotation(annotation: UserReviewAnnotation) {
+	async function removeComment(comment: UserReviewComment) {
 		const previousSession = session;
-		if (session) session = { ...session, userAnnotations: session.userAnnotations.filter((item) => item.id !== annotation.id) };
+		if (session) session = { ...session, userComments: session.userComments.filter((item) => item.id !== comment.id) };
 		try {
-			await requestOk(`/api/reviews/${reviewId}/annotations/${annotation.id}`, { method: 'DELETE' });
+			await requestOk(`/api/reviews/${reviewId}/comments/${comment.id}`, { method: 'DELETE' });
 		} catch (removeError) {
 			session = previousSession;
 			connectionWarning = removeError instanceof Error ? removeError.message : String(removeError);
@@ -448,7 +497,7 @@
 	async function changeDiffSource(nextCwd = session?.cwd ?? '') {
 		if (!session || diffSourceLoading || session.preReview.status === 'running') return;
 		if (nextCwd === session.cwd && diffSourceMode === session.diffMode && (diffSourceMode !== 'branch' || diffSourceBase === session.diffBase)) return;
-		if ((userAnnotations.length > 0 || findings.length > 0 || reviewed.size > 0) && !confirm('Change diff source? Existing annotations, highlights, and reviewed markers for this session will be cleared.')) {
+		if ((userComments.length > 0 || findings.length > 0 || reviewed.size > 0) && !confirm('Change diff source? Existing comments, agent comments, and reviewed markers for this session will be cleared.')) {
 			restoreDiffSource(session);
 			return;
 		}
@@ -541,9 +590,9 @@
 	function handleShortcut(event: KeyboardEvent) {
 		const target = event.target as HTMLElement | null;
 		const inEditor = target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT' || target?.tagName === 'SELECT';
-		if (event.key === 'Escape' && (annotationDraft || modelDialog || summaryDialog || shortcutsDialog || completionDialog)) {
+		if (event.key === 'Escape' && (commentDraft || modelDialog || summaryDialog || shortcutsDialog || completionDialog)) {
 			event.preventDefault();
-			annotationDraft = undefined;
+			commentDraft = undefined;
 			modelDialog = false;
 			summaryDialog = false;
 			shortcutsDialog = false;
@@ -555,12 +604,12 @@
 			void finish();
 			return;
 		}
-		if (annotationDraft && ((event.ctrlKey && event.key.toLowerCase() === 's') || (event.metaKey && event.key === 'Enter'))) {
+		if (commentDraft && ((event.ctrlKey && event.key.toLowerCase() === 's') || (event.metaKey && event.key === 'Enter'))) {
 			event.preventDefault();
-			void saveAnnotation();
+			void saveComment();
 			return;
 		}
-		if (annotationDraft || modelDialog || summaryDialog || shortcutsDialog || inEditor) return;
+		if (commentDraft || modelDialog || summaryDialog || shortcutsDialog || inEditor) return;
 		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c') {
 			event.preventDefault();
 			void copyFeedback();
@@ -621,7 +670,7 @@
 		if (event.key.toLowerCase() === 'f') {
 			event.preventDefault();
 			const file = currentFileForAction();
-			if (file) annotationDraft = { scope: 'file', file, body: '' };
+			if (file) commentDraft = { scope: 'file', file, body: '' };
 			return;
 		}
 		if (event.key === 'B') {
@@ -636,12 +685,12 @@
 		}
 		if (event.key.toLowerCase() === 'o') {
 			event.preventDefault();
-			annotationDraft = { scope: 'global', body: '' };
+			commentDraft = { scope: 'global', body: '' };
 			return;
 		}
 		if (event.key.toLowerCase() === 'm') {
 			event.preventDefault();
-			annotationDraft = lastLineAnnotationTarget ? { ...lastLineAnnotationTarget, body: '' } : { scope: 'global', body: '' };
+			commentDraft = lastLineCommentTarget ? { ...lastLineCommentTarget, body: '' } : { scope: 'global', body: '' };
 			return;
 		}
 		if (event.key === '+' || event.key === '=' || event.key === 'ArrowRight') {
@@ -692,38 +741,38 @@
 
 	function selectFinding(finding: ReviewFinding) {
 		if (selectedFile && finding.file) selectedFile = finding.file;
-		targetAnnotationId = undefined;
+		targetCommentId = undefined;
 		targetFindingId = finding.id;
 		highlightEntry(finding.id);
 	}
 
-	function selectAnnotation(annotation: UserReviewAnnotation) {
-		if (annotation.scope === 'global') {
-			editAnnotation(annotation);
+	function selectComment(comment: UserReviewComment) {
+		if (comment.scope === 'global') {
+			editComment(comment);
 			return;
 		}
-		if (selectedFile && annotation.file) selectedFile = annotation.file;
+		if (selectedFile && comment.file) selectedFile = comment.file;
 		targetFindingId = undefined;
-		targetAnnotationId = annotation.id;
-		highlightEntry(annotation.id);
+		targetCommentId = comment.id;
+		highlightEntry(comment.id);
 	}
 
-	function startLineAnnotation(detail: { file: string; line: number; side: 'additions' | 'deletions'; endLine?: number; endSide?: 'additions' | 'deletions' }) {
-		lastLineAnnotationTarget = { scope: 'line', ...detail };
-		annotationDraft = { ...lastLineAnnotationTarget, body: '' };
+	function startLineComment(detail: { file: string; line: number; side: 'additions' | 'deletions'; endLine?: number; endSide?: 'additions' | 'deletions' }) {
+		lastLineCommentTarget = { scope: 'line', ...detail };
+		commentDraft = { ...lastLineCommentTarget, body: '' };
 	}
 
-	function startLineRangeAnnotation(file: string, range: SelectedLineRange | null) {
+	function startLineRangeComment(file: string, range: SelectedLineRange | null) {
 		if (!range || (range.start === range.end && (range.side ?? 'additions') === (range.endSide ?? range.side ?? 'additions'))) return;
-		startLineAnnotation({ file, line: range.start, side: range.side ?? 'additions', endLine: range.end, endSide: range.endSide ?? range.side ?? 'additions' });
+		startLineComment({ file, line: range.start, side: range.side ?? 'additions', endLine: range.end, endSide: range.endSide ?? range.side ?? 'additions' });
 	}
 
-	function editAnnotation(annotation: UserReviewAnnotation) {
-		annotationDraft = { id: annotation.id, scope: annotation.scope, file: annotation.file, line: annotation.line, side: annotation.side, endLine: annotation.endLine, endSide: annotation.endSide, body: annotation.body };
+	function editComment(comment: UserReviewComment) {
+		commentDraft = { id: comment.id, scope: comment.scope, file: comment.file, line: comment.line, side: comment.side, endLine: comment.endLine, endSide: comment.endSide, body: comment.body };
 	}
 
-	async function handleAnnotationImagePaste(file: File) {
-		if (!annotationDraft) return;
+	async function handleCommentImagePaste(file: File) {
+		if (!commentDraft) return;
 		const response = await fetch(`/api/reviews/${reviewId}/attachments?name=${encodeURIComponent(file.name || 'image.png')}`, {
 			method: 'POST',
 			headers: { 'content-type': file.type || 'application/octet-stream' },
@@ -764,9 +813,9 @@
 		closingNotesTextarea?.focus();
 	}
 
-	function submitAnnotation(event: SubmitEvent) {
+	function submitComment(event: SubmitEvent) {
 		event.preventDefault();
-		void saveAnnotation();
+		void saveComment();
 	}
 
 	function backdropClick(event: MouseEvent, close: () => void) {
@@ -782,8 +831,7 @@
 	<main class="grid min-h-screen place-items-center p-4"><div class="border border-border bg-surface-2 px-2.5 py-2 text-muted">Loading review…</div></main>
 {:else}
 	<div class="grid min-h-screen grid-cols-1 grid-rows-[auto_1fr] {gridColumnsClass}">
-		<header class="sticky top-0 z-40 col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 border-b border-border bg-bg/95 px-2 backdrop-blur-sm relative" style="min-height: var(--topbar-height)">
-			<div class="absolute bottom-0 left-0 h-0.5 w-full overflow-hidden bg-surface-2"><div class="review-progress h-full bg-accent" class:review-progress-complete={celebrateReviewComplete} style={`width: ${reviewProgress}%`}></div></div>
+		<header class="sticky top-0 z-40 col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 border-b border-border bg-bg/95 px-2 backdrop-blur-sm" style="min-height: var(--topbar-height)">
 			<button class="h-8 w-8 p-0" title="Toggle files sidebar (B)" aria-label="Toggle files sidebar" onclick={() => (leftOpen = !leftOpen)}>{#if leftOpen}<PanelLeftClose size={15} />{:else}<PanelLeftOpen size={15} />{/if}</button>
 			<h1 class="min-w-0 truncate text-[0.95rem] font-semibold" title={session.cwd}>{repositoryLabel(session.cwd)}</h1>
 			<div class="flex min-w-0 items-center justify-end gap-1">
@@ -791,9 +839,9 @@
 				<label class="hidden items-center gap-1 text-sm text-muted lg:flex"><input type="checkbox" bind:checked={wrap} /> Wrap</label>
 				<button title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onclick={() => (shortcutsDialog = true)}><HelpCircle size={15} /></button>
 				<button title="Copy feedback" onclick={copyFeedback}><Clipboard size={15} /><span class="hidden sm:inline">{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</span></button>
-				<button class={allFilesReviewed ? 'border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90' : ''} title="Insert feedback (W or Cmd/Ctrl+Enter)" onclick={() => finish()}><Check size={15} /><span class="hidden sm:inline">Insert feedback</span></button>
+				<button class="feedback-progress {reviewScopeComplete ? 'review-complete' : ''}" class:review-progress-complete={celebrateReviewComplete} title={`Insert feedback (${reviewProgress}% reviewed, W or Cmd/Ctrl+Enter)`} onclick={() => finish()}><CircularCheckProgress progress={reviewProgress} /><span class="hidden sm:inline">Insert feedback</span></button>
 			</div>
-			<button class="h-8 w-8 p-0" title="Toggle annotations sidebar (Shift+B)" aria-label="Toggle annotations sidebar" onclick={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}</button>
+			<button class="h-8 w-8 p-0" title="Toggle comments sidebar (Shift+B)" aria-label="Toggle comments sidebar" onclick={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}</button>
 		</header>
 
 		{#if leftOpen}
@@ -822,13 +870,13 @@
 			</section>
 			<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
 				<div class="flex items-center justify-between gap-1.5"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{reviewedFileCount}/{visibleFiles.length}</span></div>
-				<FileTreeViewer files={visibleFiles} {selectedFile} {activeFile} reviewed={reviewedFiles} onSelect={(file) => (selectedFile = file)} />
+				<FileTreeViewer files={visibleFiles} {selectedFile} {activeFile} reviewed={reviewedFiles} progress={fileReviewProgress} progressUnits={fileReviewUnits} onSelect={(file) => (selectedFile = file)} onToggleReviewed={toggleReviewed} onSetReviewed={setFilesReviewed} />
 			</section>
 		</aside>
 		{/if}
 
 		<main class="min-w-0 max-w-full p-0" style="scroll-padding-top: calc(var(--topbar-height) + 1rem)">
-			<DiffViewer bind:this={diffViewer} {session} {findings} {hunkRanks} {reviewLevel} {isolatedLevel} reviewed={reviewedFiles} reviewedKeys={reviewed} {selectedFile} {targetFindingId} {targetAnnotationId} {diffStyle} {wrap} onActiveChange={(detail) => { activeFile = detail.file; }} onAnnotate={startLineAnnotation} onAnnotateRange={startLineRangeAnnotation} onFileComment={(file) => (annotationDraft = { scope: 'file', file, body: '' })} onToggleReviewed={toggleReviewed} onEditAnnotation={editAnnotation} onDeleteAnnotation={removeAnnotation} />
+			<DiffViewer bind:this={diffViewer} {session} {findings} {hunkRanks} {reviewLevel} {isolatedLevel} reviewed={reviewedFiles} reviewedKeys={reviewed} progress={fileReviewProgress} {selectedFile} {targetFindingId} {targetCommentId} {diffStyle} {wrap} onActiveChange={(detail) => { activeFile = detail.file; }} onComment={startLineComment} onCommentRange={startLineRangeComment} onFileComment={(file) => (commentDraft = { scope: 'file', file, body: '' })} onToggleReviewed={toggleReviewed} onEditComment={editComment} onDeleteComment={removeComment} />
 		</main>
 
 		{#if rightOpen}
@@ -882,15 +930,22 @@
 					</section>
 				{/if}
 				<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
-					<div class="flex items-center justify-between gap-1.5"><h2 class="text-[0.85rem] font-semibold">Agent annotations</h2><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{findings.length}</span></div>
-					{#if findings.length === 0}<p class="text-sm text-muted">No highlights yet.</p>{:else}<div class="grid gap-1">{#each findings as finding (finding.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-1"><span class="{severityClass(finding)} px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase">L{finding.attentionLevel} · {finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove finding" onclick={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><div class="rendered-markdown text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
+					<div class="flex items-center justify-between gap-1.5">
+						<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (agentCommentsOpen = !agentCommentsOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if agentCommentsOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}Agent comments</h2></button>
+						<span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{findings.length}</span>
+					</div>
+					{#if agentCommentsOpen}
+						{#if findings.length === 0}<p class="text-sm text-muted">No agent comments yet.</p>{:else}<div class="grid gap-1">{#each findings as finding (finding.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-1"><span class="{severityClass(finding)} px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase">L{finding.attentionLevel} · {finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove finding" onclick={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><div class="rendered-markdown text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
+					{/if}
 				</section>
 				<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
-					<div class="sticky top-0 z-10 -mx-2.5 -mt-2.5 grid gap-1 border-b border-border bg-surface p-[0.3125rem]">
-						<div class="flex items-center justify-between gap-1.5"><h2 class="text-[0.85rem] font-semibold">User annotations</h2><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{userAnnotations.length}</span></div>
-						<button class="w-full justify-start" title="Comment overall (O)" onclick={() => (annotationDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={15} />Comment overall</button>
+					<div class="flex items-center justify-between gap-1.5">
+						<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (userCommentsOpen = !userCommentsOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if userCommentsOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}User comments</h2></button>
+						<div class="flex flex-none items-center gap-1"><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{userComments.length}</span><button class="px-1 py-[0.0625rem] text-xs" title="Comment overall (O)" onclick={() => (commentDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={13} />comment</button></div>
 					</div>
-					{#if userAnnotations.length === 0}<p class="text-sm text-muted">Click line numbers, add file notes, or comment overall.</p>{:else}<div class="grid gap-1">{#each userAnnotations as annotation (annotation.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === annotation.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectAnnotation(annotation)}><span class="flex min-w-0 items-center gap-1"><small class="min-w-0 truncate text-muted">{annotation.scope === 'global' ? 'Overall' : annotation.scope === 'file' ? annotation.file : `${annotation.file}:${annotation.line}`}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-surface-hover hover:text-fg" title="Edit" aria-label="Edit annotation" onclick={() => editAnnotation(annotation)}><Edit3 size={14} /></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove annotation" onclick={() => removeAnnotation(annotation)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectAnnotation(annotation)}><div class="rendered-markdown text-sm">{@html renderMarkdown(annotation.body)}</div></button></div>{/each}</div>{/if}
+					{#if userCommentsOpen}
+						{#if userComments.length === 0}<p class="text-sm text-muted">Click line numbers, add file comments, or comment overall.</p>{:else}<div class="grid gap-1">{#each userComments as comment (comment.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === comment.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><span class="flex min-w-0 items-center gap-1"><small class="min-w-0 truncate text-muted">{comment.scope === 'global' ? 'Overall' : comment.scope === 'file' ? comment.file : `${comment.file}:${comment.line}`}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-surface-hover hover:text-fg" title="Edit" aria-label="Edit comment" onclick={() => editComment(comment)}><Edit3 size={14} /></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove comment" onclick={() => removeComment(comment)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><div class="rendered-markdown text-sm">{@html renderMarkdown(comment.body)}</div></button></div>{/each}</div>{/if}
+					{/if}
 				</section>
 			</aside>
 		{/if}
@@ -934,12 +989,12 @@
 
 {#if completionDialog}
 	<div role="presentation" class="modal-backdrop fixed inset-0 z-40 grid place-items-center p-2" onclick={(event) => backdropClick(event, () => (completionDialog = false))}>
-		<div class="confetti-layer" aria-hidden="true">{#each Array.from({ length: 24 }, (_, index) => index) as index (index)}<i></i>{/each}</div>
+		<div class="confetti-layer" aria-hidden="true">{#each confettiPieces as piece (piece.index)}<i style={piece.style}></i>{/each}</div>
 		<div role="dialog" aria-modal="true" aria-labelledby="completion-dialog-title" class="relative z-10 grid w-[min(34rem,calc(100vw-2rem))] gap-1.5 border border-accent/50 bg-surface p-2.5 shadow-[0_16px_48px_var(--shadow)]">
 			<h2 id="completion-dialog-title" class="text-[1rem] font-semibold">Review complete</h2>
-			<p class="text-sm text-muted">All files in this review scope are marked reviewed. Add optional closing notes before inserting feedback.</p>
+			<p class="text-sm text-muted">Everything in this review scope is marked reviewed. Add optional closing notes before inserting feedback.</p>
 			<label class="grid gap-[0.1875rem] text-sm text-muted">Closing notes
-				<textarea bind:this={closingNotesTextarea} bind:value={closingNotes} rows="5" placeholder="Optional notes to append below annotations…"></textarea>
+				<textarea bind:this={closingNotesTextarea} bind:value={closingNotes} rows="5" placeholder="Optional notes to append below comments…"></textarea>
 			</label>
 			<div class="flex justify-end gap-1 pt-0.5"><button type="button" onclick={() => (completionDialog = false)}>Keep reviewing</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" type="button" onclick={() => finish()}><Check size={15} />Insert feedback</button></div>
 		</div>
@@ -964,14 +1019,14 @@
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">I</kbd><dd class="text-sm text-muted">Toggle isolated review mode</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">+ / −</kbd><dd class="text-sm text-muted">Change review mode</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">B</kbd><dd class="text-sm text-muted">Toggle files sidebar</dd></div>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Shift+B</kbd><dd class="text-sm text-muted">Toggle annotations sidebar</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Shift+B</kbd><dd class="text-sm text-muted">Toggle comments sidebar</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">W</kbd><dd class="text-sm text-muted">Insert feedback</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd/Ctrl+C</kbd><dd class="text-sm text-muted">Copy feedback</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd/Ctrl+Enter</kbd><dd class="text-sm text-muted">Insert feedback</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">?</kbd><dd class="text-sm text-muted">Show keyboard shortcuts</dd></div>
-				<dt class="mt-3 border-t border-border pt-1.5 text-xs font-semibold uppercase text-muted">Editing annotation</dt>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Ctrl+S</kbd><dd class="text-sm text-muted">Save annotation</dd></div>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd+Enter</kbd><dd class="text-sm text-muted">Save annotation</dd></div>
+				<dt class="mt-3 border-t border-border pt-1.5 text-xs font-semibold uppercase text-muted">Editing comment</dt>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Ctrl+S</kbd><dd class="text-sm text-muted">Save comment</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd+Enter</kbd><dd class="text-sm text-muted">Save comment</dd></div>
 				<dt class="mt-3 border-t border-border pt-1.5 text-xs font-semibold uppercase text-muted">Dialogs</dt>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Esc</kbd><dd class="text-sm text-muted">Close dialog</dd></div>
 			</dl>
@@ -980,14 +1035,14 @@
 	</div>
 {/if}
 
-{#if annotationDraft}
-	<div role="presentation" class="modal-backdrop fixed inset-0 z-40 grid place-items-center p-2" onclick={(event) => backdropClick(event, () => (annotationDraft = undefined))}>
-		<div role="dialog" aria-modal="true" aria-labelledby="annotation-dialog-title">
-			<form class="grid w-[min(36rem,calc(100vw-2rem))] gap-1.5 border border-border bg-surface p-2.5 shadow-[0_16px_48px_var(--shadow)]" onsubmit={submitAnnotation}>
-				<h2 id="annotation-dialog-title" class="text-[0.95rem] font-semibold">{annotationDraft.id ? 'Edit annotation' : 'Add annotation'}</h2>
-				<p class="text-xs text-muted">{annotationDraft.scope === 'global' ? 'Overall review' : annotationDraft.scope === 'file' ? annotationDraft.file : `${annotationDraft.file}:${annotationDraft.line}${annotationDraft.endLine && annotationDraft.endLine !== annotationDraft.line ? `-${annotationDraft.endLine}` : ''} · ${annotationDraft.side}`}</p>
-				<MarkdownEditor bind:this={mdEditor} bind:value={annotationDraft.body} onImagePaste={handleAnnotationImagePaste} />
-				<div class="flex justify-end gap-1 pt-0.5"><button title="Close dialog (Esc)" type="button" onclick={() => (annotationDraft = undefined)}>Cancel</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Save comment (Ctrl+S or Cmd+Enter)" type="submit">Save</button></div>
+{#if commentDraft}
+	<div role="presentation" class="modal-backdrop fixed inset-0 z-40 grid place-items-center p-2" onclick={(event) => backdropClick(event, () => (commentDraft = undefined))}>
+		<div role="dialog" aria-modal="true" aria-labelledby="comment-dialog-title">
+			<form class="grid w-[min(36rem,calc(100vw-2rem))] gap-1.5 border border-border bg-surface p-2.5 shadow-[0_16px_48px_var(--shadow)]" onsubmit={submitComment}>
+				<h2 id="comment-dialog-title" class="text-[0.95rem] font-semibold">{commentDraft.id ? 'Edit comment' : 'Add comment'}</h2>
+				<p class="text-xs text-muted">{commentDraft.scope === 'global' ? 'Overall review' : commentDraft.scope === 'file' ? commentDraft.file : `${commentDraft.file}:${commentDraft.line}${commentDraft.endLine && commentDraft.endLine !== commentDraft.line ? `-${commentDraft.endLine}` : ''} · ${commentDraft.side}`}</p>
+				<MarkdownEditor bind:this={mdEditor} bind:value={commentDraft.body} onImagePaste={handleCommentImagePaste} />
+				<div class="flex justify-end gap-1 pt-0.5"><button title="Close dialog (Esc)" type="button" onclick={() => (commentDraft = undefined)}>Cancel</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Save comment (Ctrl+S or Cmd+Enter)" type="submit">Save</button></div>
 			</form>
 		</div>
 	</div>

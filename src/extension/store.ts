@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { ReviewDiffMode, ReviewFileSummary, ReviewFinding, ReviewHunkRank, ReviewSessionCreateInput, ReviewSessionSnapshot, UserReviewAnnotation, ReviewThinkingLevel } from '../lib/shared/review.ts';
+import type { ReviewDiffMode, ReviewFileSummary, ReviewFinding, ReviewHunkRank, ReviewSessionCreateInput, ReviewSessionSnapshot, UserReviewComment, ReviewThinkingLevel } from '../lib/shared/review.ts';
 
 type Listener = (snapshot: ReviewSessionSnapshot) => void;
 type FeedbackHandler = (feedback: string) => void;
@@ -17,7 +17,7 @@ export function createReviewSession(input: ReviewSessionCreateInput): ReviewSess
 		...snapshotInput,
 		id,
 		createdAt: new Date().toISOString(),
-		userAnnotations: [],
+		userComments: [],
 		preReview: {
 			status: 'idle',
 			findings: [],
@@ -117,7 +117,7 @@ export function replaceReviewDiff(id: string, input: { cwd?: string; title: stri
 			diffBase: input.diffBase,
 			patch: input.patch,
 			files: input.files,
-			userAnnotations: [],
+			userComments: [],
 			preReview: {
 				status: 'idle',
 				findings: [],
@@ -128,35 +128,35 @@ export function replaceReviewDiff(id: string, input: { cwd?: string; title: stri
 	return replaced;
 }
 
-export function addUserAnnotation(id: string, input: Omit<UserReviewAnnotation, 'id' | 'createdAt'>): UserReviewAnnotation | undefined {
-	const annotation: UserReviewAnnotation = {
+export function addUserComment(id: string, input: Omit<UserReviewComment, 'id' | 'createdAt'>): UserReviewComment | undefined {
+	const comment: UserReviewComment = {
 		...input,
 		id: randomUUID(),
 		createdAt: new Date().toISOString()
 	};
-	update(id, (snapshot) => ({ ...snapshot, userAnnotations: [...snapshot.userAnnotations, annotation] }));
-	return annotation;
+	update(id, (snapshot) => ({ ...snapshot, userComments: [...snapshot.userComments, comment] }));
+	return comment;
 }
 
-export function updateUserAnnotation(id: string, annotationId: string, body: string): UserReviewAnnotation | undefined {
-	let updated: UserReviewAnnotation | undefined;
+export function updateUserComment(id: string, commentId: string, body: string): UserReviewComment | undefined {
+	let updated: UserReviewComment | undefined;
 	update(id, (snapshot) => {
-		const userAnnotations = snapshot.userAnnotations.map((annotation) => {
-			if (annotation.id !== annotationId) return annotation;
-			updated = { ...annotation, body };
+		const userComments = snapshot.userComments.map((comment) => {
+			if (comment.id !== commentId) return comment;
+			updated = { ...comment, body };
 			return updated;
 		});
-		return { ...snapshot, userAnnotations };
+		return { ...snapshot, userComments };
 	});
 	return updated;
 }
 
-export function removeUserAnnotation(id: string, annotationId: string): boolean {
+export function removeUserComment(id: string, commentId: string): boolean {
 	let removed = false;
 	update(id, (snapshot) => {
-		const userAnnotations = snapshot.userAnnotations.filter((annotation) => annotation.id !== annotationId);
-		removed = userAnnotations.length !== snapshot.userAnnotations.length;
-		return { ...snapshot, userAnnotations };
+		const userComments = snapshot.userComments.filter((comment) => comment.id !== commentId);
+		removed = userComments.length !== snapshot.userComments.length;
+		return { ...snapshot, userComments };
 	});
 	return removed;
 }
@@ -211,7 +211,7 @@ function buildFeedback(session: ReviewSessionSnapshot | undefined): string {
 	if (!session) return '';
 	const lines: string[] = [];
 	for (const finding of session.preReview.findings) lines.push(formatFeedbackLine(finding.file, finding.line, finding.title));
-	for (const annotation of session.userAnnotations) lines.push(formatFeedbackLine(annotation.file, annotation.line, annotation.body, annotation.endLine));
+	for (const comment of session.userComments) lines.push(formatFeedbackLine(comment.file, comment.line, comment.body, comment.endLine));
 	return lines.join('\n');
 }
 
