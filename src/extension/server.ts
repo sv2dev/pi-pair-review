@@ -11,6 +11,7 @@ import { addUserAnnotation, finishReview, getReviewFeedback, getReviewSession, i
 import { buildDiffCommandFromSelection, summarizePatchFiles, type DiffMode } from './diff.ts';
 import { buildHeuristicPreReview } from './pre-review.ts';
 import { readReviewUiSettings, updateReviewUiSettings } from './settings.ts';
+import { imageContentType, isReviewableImagePath } from '../lib/shared/images.ts';
 import type { ReviewSessionSnapshot } from '../lib/shared/review.ts';
 
 type SvelteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
@@ -147,6 +148,36 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 			}
 			const contents = await readDiffFileContents(session, file, previous ?? file);
 			writeJson(res, 200, contents);
+		})().catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
+		return;
+	}
+
+	if (req.method === 'GET' && tail === 'blob') {
+		void (async () => {
+			const session = getReviewSession(id);
+			if (!session) {
+				writeJson(res, 404, { error: 'Review not found' });
+				return;
+			}
+			const file = url.searchParams.get('file')?.trim();
+			const previous = url.searchParams.get('previous')?.trim() || file;
+			const side = url.searchParams.get('side') === 'old' ? 'old' : 'new';
+			if (!file || file.includes('\0') || previous?.includes('\0')) {
+				writeJson(res, 400, { error: 'Invalid file path' });
+				return;
+			}
+			const name = side === 'old' ? previous ?? file : file;
+			if (!isReviewableImagePath(name)) {
+				writeJson(res, 400, { error: 'Not a supported image file' });
+				return;
+			}
+			const contents = await readDiffFileBlob(session, file, previous ?? file, side);
+			if (!contents) {
+				writeJson(res, 404, { error: 'Image not found' });
+				return;
+			}
+			res.writeHead(200, { 'content-type': imageContentType(name) ?? 'application/octet-stream', 'cache-control': 'no-cache' });
+			res.end(contents);
 		})().catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
 	}
@@ -372,35 +403,54 @@ async function readGitTopLevel(cwd: string): Promise<string | undefined> {
 }
 
 async function readDiffFileContents(session: ReviewSessionSnapshot, file: string, previous: string): Promise<{ oldFile: { name: string; contents: string }; newFile: { name: string; contents: string } }> {
-	const mode = session.diffMode ?? 'uncommitted';
 	const oldName = previous || file;
 	const newName = file;
-	let oldContents = '';
-	let newContents = '';
+	const contents = await readDiffFileContentsForMode(session, oldName, newName, readGitObject, readWorktreeFile, '');
+	return {
+		oldFile: { name: oldName, contents: contents.oldContents },
+		newFile: { name: newName, contents: contents.newContents }
+	};
+}
+
+async function readDiffFileBlob(session: ReviewSessionSnapshot, file: string, previous: string, side: 'old' | 'new'): Promise<Buffer | undefined> {
+	const oldName = previous || file;
+	const newName = file;
+	const contents = await readDiffFileContentsForMode<Buffer | undefined>(session, oldName, newName, readGitObjectBuffer, readWorktreeFileBuffer, undefined);
+	return side === 'old' ? contents.oldContents : contents.newContents;
+}
+
+async function readDiffFileContentsForMode<T>(
+	session: ReviewSessionSnapshot,
+	oldName: string,
+	newName: string,
+	readObject: (cwd: string, spec: string) => Promise<T | undefined>,
+	readWorktree: (cwd: string, file: string) => Promise<T | undefined>,
+	fallback: T
+): Promise<{ oldContents: T; newContents: T }> {
+	const mode = session.diffMode ?? 'uncommitted';
+	let oldContents = fallback;
+	let newContents = fallback;
 
 	if (mode === 'unstaged') {
-		oldContents = await readGitObject(session.cwd, `:${oldName}`) ?? '';
-		newContents = await readWorktreeFile(session.cwd, newName) ?? '';
+		oldContents = await readObject(session.cwd, `:${oldName}`) ?? fallback;
+		newContents = await readWorktree(session.cwd, newName) ?? fallback;
 	} else if (mode === 'staged') {
-		oldContents = await readGitObject(session.cwd, `HEAD:${oldName}`) ?? '';
-		newContents = await readGitObject(session.cwd, `:${newName}`) ?? '';
+		oldContents = await readObject(session.cwd, `HEAD:${oldName}`) ?? fallback;
+		newContents = await readObject(session.cwd, `:${newName}`) ?? fallback;
 	} else if (mode === 'commit') {
-		oldContents = await readGitObject(session.cwd, `HEAD^:${oldName}`) ?? '';
-		newContents = await readGitObject(session.cwd, `HEAD:${newName}`) ?? '';
+		oldContents = await readObject(session.cwd, `HEAD^:${oldName}`) ?? fallback;
+		newContents = await readObject(session.cwd, `HEAD:${newName}`) ?? fallback;
 	} else if (mode === 'branch') {
 		const base = session.diffBase?.trim() || 'origin/main';
 		const mergeBase = await readMergeBase(session.cwd, base);
-		oldContents = mergeBase ? await readGitObject(session.cwd, `${mergeBase}:${oldName}`) ?? '' : '';
-		newContents = await readGitObject(session.cwd, `HEAD:${newName}`) ?? '';
+		oldContents = mergeBase ? await readObject(session.cwd, `${mergeBase}:${oldName}`) ?? fallback : fallback;
+		newContents = await readObject(session.cwd, `HEAD:${newName}`) ?? fallback;
 	} else {
-		oldContents = await readGitObject(session.cwd, `HEAD:${oldName}`) ?? '';
-		newContents = await readWorktreeFile(session.cwd, newName) ?? '';
+		oldContents = await readObject(session.cwd, `HEAD:${oldName}`) ?? fallback;
+		newContents = await readWorktree(session.cwd, newName) ?? fallback;
 	}
 
-	return {
-		oldFile: { name: oldName, contents: oldContents },
-		newFile: { name: newName, contents: newContents }
-	};
+	return { oldContents, newContents };
 }
 
 async function readMergeBase(cwd: string, base: string): Promise<string | undefined> {
@@ -413,12 +463,28 @@ async function readGitObject(cwd: string, spec: string): Promise<string | undefi
 	return result.code === 0 ? result.stdout : undefined;
 }
 
+async function readGitObjectBuffer(cwd: string, spec: string): Promise<Buffer | undefined> {
+	const result = await execCommandBuffer('git', ['show', spec], cwd, 10_000);
+	return result.code === 0 ? result.stdout : undefined;
+}
+
 async function readWorktreeFile(cwd: string, file: string): Promise<string | undefined> {
 	const root = resolve(cwd);
 	const target = resolve(root, file);
 	if (!(target === root || target.startsWith(`${root}${sep}`))) return undefined;
 	try {
 		return await readFile(target, 'utf8');
+	} catch {
+		return undefined;
+	}
+}
+
+async function readWorktreeFileBuffer(cwd: string, file: string): Promise<Buffer | undefined> {
+	const root = resolve(cwd);
+	const target = resolve(root, file);
+	if (!(target === root || target.startsWith(`${root}${sep}`))) return undefined;
+	try {
+		return await readFile(target);
 	} catch {
 		return undefined;
 	}
@@ -445,6 +511,26 @@ async function execCommand(command: string, args: string[], cwd: string, timeout
 		child.on('close', (code) => {
 			clearTimeout(timer);
 			resolve({ code, stdout, stderr });
+		});
+	});
+}
+
+async function execCommandBuffer(command: string, args: string[], cwd: string, timeout: number): Promise<{ code: number | null; stdout: Buffer; stderr: string }> {
+	return new Promise((resolve) => {
+		const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+		const stdout: Buffer[] = [];
+		let stderr = '';
+		const timer = setTimeout(() => child.kill('SIGTERM'), timeout);
+		child.stderr.setEncoding('utf8');
+		child.stdout.on('data', (chunk) => stdout.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+		child.stderr.on('data', (chunk) => (stderr += chunk));
+		child.on('error', (error) => {
+			clearTimeout(timer);
+			resolve({ code: 1, stdout: Buffer.concat(stdout), stderr: error.message });
+		});
+		child.on('close', (code) => {
+			clearTimeout(timer);
+			resolve({ code, stdout: Buffer.concat(stdout), stderr });
 		});
 	});
 }

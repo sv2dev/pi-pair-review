@@ -2,6 +2,7 @@
 	import { onMount, tick } from 'svelte';
 	import { renderReviewMarkdown } from '$lib/client/review-markdown';
 	import { compareTreeOrder } from '$lib/client/review-ui';
+	import { isReviewableImagePath } from '$lib/shared/images';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { Check, ChevronDown, ChevronRight, MessageSquarePlus, Trash2 } from '@lucide/svelte';
 	import type { DiffLineAnnotation, FileContents, FileDiff as FileDiffInstance, FileDiffMetadata, SelectedLineRange } from '@pierre/diffs';
@@ -130,7 +131,7 @@
 			if (sequence !== renderSequence) return;
 
 			const currentSession = session;
-			const nextRenderedFiles = (await parseRenderedFiles(filteredPatch(), currentSession, hunkRanks.length === 0)).sort((left, right) => compareTreeOrder(left.name, right.name));
+			const nextRenderedFiles = (await parseRenderedFiles(filteredPatch(), currentSession, true)).sort((left, right) => compareTreeOrder(left.name, right.name));
 			if (sequence !== renderSequence) return;
 			renderedFiles = nextRenderedFiles;
 			await tick();
@@ -155,6 +156,10 @@
 					lineHoverHighlight: 'both',
 					enableLineSelection: true,
 					unsafeCSS: diffUnsafeCss(),
+					onPostRender: () => {
+						void applyHunkVisibility();
+						void updateLastFileScrollPadding();
+					},
 					onLineNumberClick: ({ lineNumber, annotationSide }) => {
 						onAnnotate?.({ file: file.name, line: lineNumber, side: annotationSide });
 					},
@@ -239,7 +244,9 @@
 	}
 
 	function hunkElements() {
-		return shadowHosts().flatMap((host) => [...(host.shadowRoot?.querySelectorAll<HTMLElement>('[data-separator]') ?? [])]);
+		return shadowHosts()
+			.flatMap((host) => [...(host.shadowRoot?.querySelectorAll<HTMLElement>('[data-separator]') ?? [])])
+			.filter((element) => element.offsetParent !== null || !!element.getClientRects().length);
 	}
 
 	function onScroll() {
@@ -353,6 +360,20 @@
 		return type === 'deleted' ? 'bg-danger-soft text-danger' : 'bg-accent-soft text-accent';
 	}
 
+	function isImageDiff(file: FileDiffMetadata) {
+		return isReviewableImagePath(file.name) || isReviewableImagePath(file.prevName);
+	}
+
+	function imageSideAvailable(file: FileDiffMetadata, side: 'old' | 'new') {
+		return side === 'old' ? file.type !== 'new' : file.type !== 'deleted';
+	}
+
+	function imageDiffSrc(file: FileDiffMetadata, side: 'old' | 'new') {
+		const params = new URLSearchParams({ file: file.name, side });
+		if (file.prevName) params.set('previous', file.prevName);
+		return `/api/reviews/${session.id}/blob?${params}`;
+	}
+
 	function diffUnsafeCss() {
 		return `
 			[data-code] {
@@ -417,17 +438,23 @@
 			const fileRanks = hunkRanks.filter((rank) => rank.file === file.name || rank.file === file.prevName);
 			if (fileRanks.length === 0) continue;
 			const visible = new SvelteSet<number>();
+			const visibleHunkIndexes = new SvelteSet<number>();
 			const reviewedVisibleIndexes = new SvelteSet<number>();
-			for (const hunk of file.hunks) {
+			for (const [hunkIndex, hunk] of file.hunks.entries()) {
 				const rank = hunkRankFor(file, hunk);
 				const level = rank?.attentionLevel ?? 5;
 				if (isolatedLevel ? level !== Number(reviewLevel) : level > Number(reviewLevel)) continue;
+				visibleHunkIndexes.add(hunkIndex);
 				const start = effectiveDiffStyle === 'split' ? hunk.splitLineStart : hunk.unifiedLineStart;
 				const count = effectiveDiffStyle === 'split' ? hunk.splitLineCount : hunk.unifiedLineCount;
 				for (let index = start; index < start + count; index += 1) {
 					visible.add(index);
 					if (rank && reviewedKeys.has(reviewedKey(file.name, rank.attentionLevel))) reviewedVisibleIndexes.add(index);
 				}
+			}
+			for (const separator of shadowRoot.querySelectorAll<HTMLElement>('[data-separator][data-expand-index]')) {
+				const hunkIndex = Number(separator.getAttribute('data-expand-index'));
+				if (Number.isFinite(hunkIndex) && !visibleHunkIndexes.has(hunkIndex) && !visibleHunkIndexes.has(hunkIndex - 1)) separator.style.display = 'none';
 			}
 			for (const element of shadowRoot.querySelectorAll<HTMLElement>('[data-line-index]')) {
 				element.classList.remove('review-reviewed-hunk');
@@ -451,7 +478,7 @@
 		for (const [index, chunk] of chunks.entries()) {
 			const parsed = parsePatchFiles(chunk, `${currentSession.id}-${index}`, true).flatMap((item) => item.files);
 			for (const file of parsed) {
-				const contents = hydrateFullFileContext ? await contentsFor(file, currentSession) : undefined;
+				const contents = hydrateFullFileContext && file.hunks.length > 0 && !isImageDiff(file) ? await contentsFor(file, currentSession) : undefined;
 				if (!contents) {
 					files.push(file);
 					continue;
@@ -506,27 +533,39 @@
 
 	function filteredPatch() {
 		if (hunkRanks.length === 0 && !selectedFile) return session.patch;
-		const visible = new SvelteSet(
-			hunkRanks
-				.filter((rank) => isolatedLevel ? rank.attentionLevel === Number(reviewLevel) : rank.attentionLevel <= Number(reviewLevel))
-				.filter((rank) => !selectedFile || rank.file === selectedFile)
-				.map((rank) => hunkKey(rank.file, rank.oldStart, rank.oldLines, rank.newStart, rank.newLines))
-		);
 		const selected = selectedFile ? new SvelteSet([selectedFile]) : undefined;
+		const visibleFiles = hunkRanks.length > 0
+			? new SvelteSet(
+				hunkRanks
+					.filter((rank) => isolatedLevel ? rank.attentionLevel === Number(reviewLevel) : rank.attentionLevel <= Number(reviewLevel))
+					.map((rank) => rank.file)
+			)
+			: undefined;
 		const output: string[] = [];
 		let header: string[] = [];
 		let body: string[] = [];
 		let currentFile = '';
-		let currentHunk: string | undefined;
+		let previousFile = '';
+		let currentHunk = false;
+		let fileHasHunks = false;
 		let includeCurrentFile = false;
-		let includeCurrentHunk = false;
-		let oldStart = 0;
-		let oldLines = 0;
-		let newStart = 0;
-		let newLines = 0;
 
+		const includeUnrankedImageFile = () => {
+			if (!isReviewableImagePath(currentFile) && !isReviewableImagePath(previousFile)) return false;
+			return !hunkRanks.some((rank) => rank.file === currentFile || rank.file === previousFile);
+		};
+		const shouldIncludeFile = () => {
+			const selectedMatch = !selected || selected.has(currentFile) || selected.has(previousFile);
+			const reviewLevelMatch = !visibleFiles || visibleFiles.has(currentFile) || visibleFiles.has(previousFile);
+			return (selectedMatch && reviewLevelMatch) || includeUnrankedImageFile();
+		};
+		const flushFileWithoutHunks = () => {
+			if (fileHasHunks || header.length === 0 || !includeCurrentFile || !includeUnrankedImageFile()) return;
+			output.push(...header);
+			header = [];
+		};
 		const flushHunk = () => {
-			if (!includeCurrentFile || !currentHunk || !includeCurrentHunk) return;
+			if (!includeCurrentFile || !currentHunk) return;
 			if (header.length > 0) {
 				output.push(...header);
 				header = [];
@@ -538,29 +577,33 @@
 			const fileHeader = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
 			if (fileHeader) {
 				flushHunk();
-				currentFile = fileHeader[2] ?? fileHeader[1] ?? '';
-				includeCurrentFile = !selected || selected.has(currentFile) || selected.has(fileHeader[1] ?? '');
+				flushFileWithoutHunks();
+				previousFile = fileHeader[1] ?? '';
+				currentFile = fileHeader[2] ?? previousFile;
+				includeCurrentFile = shouldIncludeFile();
 				header = [line];
 				body = [];
-				currentHunk = undefined;
+				currentHunk = false;
+				fileHasHunks = false;
 				continue;
 			}
 
-			const rename = /^rename to (.+)$/.exec(line);
-			if (rename) {
-				currentFile = rename[1] ?? currentFile;
-				if (selected?.has(currentFile)) includeCurrentFile = true;
+			const renameFrom = /^rename from (.+)$/.exec(line);
+			if (renameFrom) {
+				previousFile = renameFrom[1] ?? previousFile;
+				includeCurrentFile = shouldIncludeFile();
+			}
+			const renameTo = /^rename to (.+)$/.exec(line);
+			if (renameTo) {
+				currentFile = renameTo[1] ?? currentFile;
+				includeCurrentFile = shouldIncludeFile();
 			}
 
 			const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
 			if (hunk) {
 				flushHunk();
-				oldStart = Number(hunk[1]);
-				oldLines = Number(hunk[2] ?? '1');
-				newStart = Number(hunk[3]);
-				newLines = Number(hunk[4] ?? '1');
-				currentHunk = hunkKey(currentFile, oldStart, oldLines, newStart, newLines);
-				includeCurrentHunk = hunkRanks.length === 0 || visible.has(currentHunk);
+				fileHasHunks = true;
+				currentHunk = true;
 				body = [line];
 				continue;
 			}
@@ -569,11 +612,8 @@
 			else body.push(line);
 		}
 		flushHunk();
+		flushFileWithoutHunks();
 		return output.join('\n');
-	}
-
-	function hunkKey(file: string, oldStart: number, oldLines: number, newStart: number, newLines: number) {
-		return `${file}:${oldStart}:${oldLines}:${newStart}:${newLines}`;
 	}
 
 	function shadowHosts() {
@@ -740,7 +780,28 @@
 				</div>
 			{/if}
 
-			<div class="file-diff-host" hidden={collapsed} {@attach registerDiffHost(file.name)}></div>
+			{#if isImageDiff(file)}
+				<div class="image-diff grid gap-1.5 p-1.5" hidden={collapsed}>
+					<figure class="image-diff-side grid min-w-0 gap-1 border border-border bg-surface-2 p-1">
+						<figcaption class="truncate text-xs font-semibold uppercase text-muted">Before</figcaption>
+						{#if imageSideAvailable(file, 'old')}
+							<img src={imageDiffSrc(file, 'old')} alt={`Before ${file.prevName ?? file.name}`} loading="lazy" />
+						{:else}
+							<div class="image-diff-empty grid place-items-center text-sm text-muted">No previous image</div>
+						{/if}
+					</figure>
+					<figure class="image-diff-side grid min-w-0 gap-1 border border-border bg-surface-2 p-1">
+						<figcaption class="truncate text-xs font-semibold uppercase text-muted">After</figcaption>
+						{#if imageSideAvailable(file, 'new')}
+							<img src={imageDiffSrc(file, 'new')} alt={`After ${file.name}`} loading="lazy" />
+						{:else}
+							<div class="image-diff-empty grid place-items-center text-sm text-muted">No new image</div>
+						{/if}
+					</figure>
+				</div>
+			{:else}
+				<div class="file-diff-host" hidden={collapsed} {@attach registerDiffHost(file.name)}></div>
+			{/if}
 		</section>
 	{/each}
 </div>

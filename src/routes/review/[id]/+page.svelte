@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { renderReviewMarkdown } from '$lib/client/review-markdown';
 	import { availableReviewLevelOptions, buildReviewFeedback, filterFilesForReviewLevel, modeForLevel, reviewModeOption, sortFilesForTree } from '$lib/client/review-ui';
+	import { isReviewableImagePath } from '$lib/shared/images';
 	import DiffViewer from '$lib/components/DiffViewer.svelte';
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
@@ -295,6 +296,11 @@
 			if (!file || units.some((unit) => unit.file === file && unit.level === rank.attentionLevel)) continue;
 			units.push({ file, level: rank.attentionLevel });
 		}
+		for (const file of files) {
+			if (!isUnrankedImageFile(file.path)) continue;
+			const level = unrankedImageReviewLevel();
+			if (!units.some((unit) => unit.file === file.path && unit.level === level)) units.push({ file: file.path, level });
+		}
 		return units;
 	}
 
@@ -316,7 +322,18 @@
 			if (isolatedLevel ? rank.attentionLevel !== Number(reviewLevel) : rank.attentionLevel > Number(reviewLevel)) continue;
 			if (!levels.includes(rank.attentionLevel)) levels.push(rank.attentionLevel);
 		}
+		if (levels.length === 0 && isUnrankedImageFile(file)) levels.push(unrankedImageReviewLevel());
 		return levels.sort((left, right) => left - right);
+	}
+
+	function isUnrankedImageFile(file: string) {
+		const summary = files.find((item) => item.path === file || item.previousPath === file);
+		if (!summary || (!isReviewableImagePath(summary.path) && !isReviewableImagePath(summary.previousPath))) return false;
+		return !hunkRanks.some((rank) => rank.file === summary.path || rank.file === summary.previousPath);
+	}
+
+	function unrankedImageReviewLevel() {
+		return lowestReviewLevel(hunkRanks) as ReviewAttentionLevel;
 	}
 
 	function reviewedKey(file: string, level: ReviewAttentionLevel) {
@@ -594,10 +611,11 @@
 			diffViewer?.editActiveComment();
 			return;
 		}
-		if (event.key.toLowerCase() === 'v') {
-			event.preventDefault();
+		if (event.key === ' ' || event.key.toLowerCase() === 'v') {
 			const file = currentFileForAction();
-			if (file) toggleReviewed(file);
+			if (!file) return;
+			event.preventDefault();
+			toggleReviewed(file);
 			return;
 		}
 		if (event.key.toLowerCase() === 'f') {
@@ -938,7 +956,7 @@
 				<dt class="mt-3 border-t border-border pt-1.5 text-xs font-semibold uppercase text-muted">Diff view</dt>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Shift+↓ / ↑</kbd><dd class="text-sm text-muted">Next / previous comment</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Enter</kbd><dd class="text-sm text-muted">Edit highlighted user comment</dd></div>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">V</kbd><dd class="text-sm text-muted">Toggle current file reviewed</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Space / V</kbd><dd class="text-sm text-muted">Toggle current file reviewed</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">F</kbd><dd class="text-sm text-muted">Add file comment</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Opt+↓ / ↑</kbd><dd class="text-sm text-muted">Next / previous hunk</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">O</kbd><dd class="text-sm text-muted">Comment overall</dd></div>

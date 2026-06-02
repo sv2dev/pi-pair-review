@@ -1,3 +1,4 @@
+import { isReviewableImagePath } from '$lib/shared/images';
 import type { ReviewAttentionLevel, ReviewFileSummary, ReviewFinding, ReviewHunkRank, ReviewMode, UserReviewAnnotation } from '$lib/shared/review';
 
 export interface ReviewModeOption {
@@ -34,7 +35,12 @@ export function reviewModeOption(mode: ReviewMode, level = 1): ReviewModeOption 
 export function filterFilesForReviewLevel(files: ReviewFileSummary[], ranks: ReviewHunkRank[], level: number, isolatedLevel: boolean) {
 	if (ranks.length === 0) return files;
 	const visible = new Set(ranks.filter((rank) => isolatedLevel ? rank.attentionLevel === Number(level) : rank.attentionLevel <= Number(level)).map((rank) => rank.file));
-	return files.filter((file) => visible.has(file.path) || (file.previousPath && visible.has(file.previousPath)));
+	return files.filter((file) => visible.has(file.path) || (file.previousPath && visible.has(file.previousPath)) || isUnrankedImageFile(file, ranks));
+}
+
+function isUnrankedImageFile(file: ReviewFileSummary, ranks: ReviewHunkRank[]) {
+	if (!isReviewableImagePath(file.path) && !isReviewableImagePath(file.previousPath)) return false;
+	return !ranks.some((rank) => rank.file === file.path || rank.file === file.previousPath);
 }
 
 export function sortFilesForTree(files: ReviewFileSummary[]) {

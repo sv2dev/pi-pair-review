@@ -306,7 +306,33 @@ input[type='radio'] {
 	max-width: 100%;
 }
 
+.image-diff {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.image-diff-side img {
+	width: 100%;
+	max-height: 70vh;
+	object-fit: contain;
+	background:
+		linear-gradient(45deg, var(--surface) 25%, transparent 25%),
+		linear-gradient(-45deg, var(--surface) 25%, transparent 25%),
+		linear-gradient(45deg, transparent 75%, var(--surface) 75%),
+		linear-gradient(-45deg, transparent 75%, var(--surface) 75%);
+	background-color: var(--surface-2);
+	background-position: 0 0, 0 0.5rem, 0.5rem -0.5rem, -0.5rem 0;
+	background-size: 1rem 1rem;
+}
+
+.image-diff-empty {
+	min-height: 12rem;
+}
+
 @container (max-width: 820px) {
+	.image-diff {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
 	.file-action-label {
 		display: none;
 	}
