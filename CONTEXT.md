@@ -33,7 +33,7 @@ Optional overall feedback added at the end of a review.
 _Avoid_: summary
 
 **Review Marker**:
-An interactive file-or-directory indicator that shows **Review Progress** and toggles reviewed state for its target, acting as the file-tree icon during review.
+An interactive root, file, or directory indicator that shows **Review Progress** and toggles reviewed state for its target, replacing file and directory icons during review.
 _Avoid_: status icon, decoration
 
 **Agent Comment**:
@@ -48,6 +48,7 @@ _Avoid_: user annotation, note
 
 - A **Review Scope** contains one or more **Review Units**
 - **Review Progress** is surfaced through **Insert Feedback** and **Review Markers**
+- The root **Review Marker** toggles reviewed state for all visible files in the current **Review Scope**
 - A file **Review Marker** toggles all **Review Units** for that file in the current **Review Scope**
 - A directory **Review Marker** replaces the directory icon and toggles reviewed state for all visible descendant files in the current **Review Scope**
 - Marking a file reviewed advances navigation only when that file is the active review target
