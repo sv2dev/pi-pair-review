@@ -98,6 +98,6 @@
 </script>
 
 <div
-	class="min-h-40 overflow-auto rounded-lg border border-border-strong bg-bg focus-within:outline focus-within:outline-2 focus-within:outline-accent"
+	class="min-h-40 overflow-auto border border-border-strong bg-bg focus-within:outline focus-within:outline-2 focus-within:outline-accent"
 	bind:this={host}
 ></div>

@@ -94,6 +94,6 @@
 </script>
 
 <button
-	class="mb-1 w-full justify-start rounded-md border-0 px-3 py-1.5 text-left text-sm hover:bg-surface-hover {!selectedFile ? 'bg-surface-hover font-medium' : 'bg-surface-2'}"
+	class="mb-1 w-full justify-start border-0 px-1.5 py-[0.1875rem] text-left text-sm hover:bg-surface-hover {!selectedFile ? 'bg-surface-hover font-medium' : 'bg-surface-2'}"
 	onclick={() => onSelect?.(undefined)}>All files</button>
 <div class="max-h-72 min-h-48 overflow-auto lg:h-[calc(100vh-14rem)] lg:max-h-none lg:min-h-72" bind:this={host}></div>

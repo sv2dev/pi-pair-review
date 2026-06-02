@@ -8,7 +8,6 @@ export type ReviewUiSettings = Partial<{
 	thinkingLevel: string;
 	suggestComments: boolean;
 	autoReview: boolean;
-	reviewLevel: number;
 	isolatedLevel: boolean;
 	diffStyle: 'split' | 'unified';
 	wrap: boolean;
@@ -44,7 +43,6 @@ function sanitizeSettings(value: ReviewUiSettings): ReviewUiSettings {
 	if (typeof value.thinkingLevel === 'string') next.thinkingLevel = value.thinkingLevel;
 	if (typeof value.suggestComments === 'boolean') next.suggestComments = value.suggestComments;
 	if (typeof value.autoReview === 'boolean') next.autoReview = value.autoReview;
-	if (typeof value.reviewLevel === 'number' && Number.isFinite(value.reviewLevel)) next.reviewLevel = value.reviewLevel;
 	if (typeof value.isolatedLevel === 'boolean') next.isolatedLevel = value.isolatedLevel;
 	if (value.diffStyle === 'split' || value.diffStyle === 'unified') next.diffStyle = value.diffStyle;
 	if (typeof value.wrap === 'boolean') next.wrap = value.wrap;

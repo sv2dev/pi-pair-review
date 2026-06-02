@@ -13,7 +13,6 @@ export interface ReviewUiSettings {
 	thinkingLevel?: ReviewThinkingLevel;
 	suggestComments?: boolean;
 	autoReview?: boolean;
-	reviewLevel?: ReviewAttentionLevel;
 	isolatedLevel?: boolean;
 	diffStyle?: ReviewDiffStyle;
 	wrap?: boolean;
@@ -59,6 +58,8 @@ export interface UserReviewAnnotation {
 	file?: string;
 	line?: number;
 	side?: ReviewSide;
+	endLine?: number;
+	endSide?: ReviewSide;
 	body: string;
 	createdAt: string;
 }

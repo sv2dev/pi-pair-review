@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, extname, join, normalize, sep } from 'node:path';
+import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -11,6 +11,7 @@ import { addUserAnnotation, finishReview, getReviewFeedback, getReviewSession, i
 import { buildDiffCommandFromSelection, summarizePatchFiles, type DiffMode } from './diff.ts';
 import { buildHeuristicPreReview } from './pre-review.ts';
 import { readReviewUiSettings, updateReviewUiSettings } from './settings.ts';
+import type { ReviewSessionSnapshot } from '../lib/shared/review.ts';
 
 type SvelteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 type WebHandler = { handler?: SvelteHandler; close?: () => Promise<void> | void; dev?: boolean };
@@ -131,6 +132,25 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 		return;
 	}
 
+	if (req.method === 'GET' && tail === 'contents') {
+		void (async () => {
+			const session = getReviewSession(id);
+			if (!session) {
+				writeJson(res, 404, { error: 'Review not found' });
+				return;
+			}
+			const file = url.searchParams.get('file')?.trim();
+			const previous = url.searchParams.get('previous')?.trim() || file;
+			if (!file || file.includes('\0') || previous?.includes('\0')) {
+				writeJson(res, 400, { error: 'Invalid file path' });
+				return;
+			}
+			const contents = await readDiffFileContents(session, file, previous ?? file);
+			writeJson(res, 200, contents);
+		})().catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
+		return;
+	}
+
 	if (req.method === 'GET' && tail === 'refs') {
 		void (async () => {
 			const session = getReviewSession(id);
@@ -247,12 +267,14 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 			const file = typeof value.file === 'string' && value.file.trim() ? value.file.trim() : undefined;
 			const line = typeof value.line === 'number' && Number.isFinite(value.line) ? value.line : undefined;
 			const side = value.side === 'deletions' ? 'deletions' : value.side === 'additions' ? 'additions' : undefined;
+			const endLine = typeof value.endLine === 'number' && Number.isFinite(value.endLine) ? value.endLine : undefined;
+			const endSide = value.endSide === 'deletions' ? 'deletions' : value.endSide === 'additions' ? 'additions' : undefined;
 			const annotationBody = typeof value.body === 'string' ? value.body.trim() : '';
 			if (!annotationBody || (scope !== 'global' && !file) || (scope === 'line' && (!line || !side))) {
 				writeJson(res, 400, { error: 'Missing annotation fields' });
 				return;
 			}
-			const annotation = addUserAnnotation(id, { scope, file, line, side, body: annotationBody });
+			const annotation = addUserAnnotation(id, { scope, file, line, side, endLine, endSide, body: annotationBody });
 			writeJson(res, annotation ? 200 : 404, annotation ?? { error: 'Review not found' });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
@@ -286,6 +308,59 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 
 function normalizeThinkingLevel(value: string) {
 	return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' ? value : 'off';
+}
+
+async function readDiffFileContents(session: ReviewSessionSnapshot, file: string, previous: string): Promise<{ oldFile: { name: string; contents: string }; newFile: { name: string; contents: string } }> {
+	const mode = session.diffMode ?? 'uncommitted';
+	const oldName = previous || file;
+	const newName = file;
+	let oldContents = '';
+	let newContents = '';
+
+	if (mode === 'unstaged') {
+		oldContents = await readGitObject(session.cwd, `:${oldName}`) ?? '';
+		newContents = await readWorktreeFile(session.cwd, newName) ?? '';
+	} else if (mode === 'staged') {
+		oldContents = await readGitObject(session.cwd, `HEAD:${oldName}`) ?? '';
+		newContents = await readGitObject(session.cwd, `:${newName}`) ?? '';
+	} else if (mode === 'commit') {
+		oldContents = await readGitObject(session.cwd, `HEAD^:${oldName}`) ?? '';
+		newContents = await readGitObject(session.cwd, `HEAD:${newName}`) ?? '';
+	} else if (mode === 'branch') {
+		const base = session.diffBase?.trim() || 'origin/main';
+		const mergeBase = await readMergeBase(session.cwd, base);
+		oldContents = mergeBase ? await readGitObject(session.cwd, `${mergeBase}:${oldName}`) ?? '' : '';
+		newContents = await readGitObject(session.cwd, `HEAD:${newName}`) ?? '';
+	} else {
+		oldContents = await readGitObject(session.cwd, `HEAD:${oldName}`) ?? '';
+		newContents = await readWorktreeFile(session.cwd, newName) ?? '';
+	}
+
+	return {
+		oldFile: { name: oldName, contents: oldContents },
+		newFile: { name: newName, contents: newContents }
+	};
+}
+
+async function readMergeBase(cwd: string, base: string): Promise<string | undefined> {
+	const result = await execCommand('git', ['merge-base', base, 'HEAD'], cwd, 10_000);
+	return result.code === 0 ? result.stdout.trim() || undefined : undefined;
+}
+
+async function readGitObject(cwd: string, spec: string): Promise<string | undefined> {
+	const result = await execCommand('git', ['show', spec], cwd, 10_000);
+	return result.code === 0 ? result.stdout : undefined;
+}
+
+async function readWorktreeFile(cwd: string, file: string): Promise<string | undefined> {
+	const root = resolve(cwd);
+	const target = resolve(root, file);
+	if (!(target === root || target.startsWith(`${root}${sep}`))) return undefined;
+	try {
+		return await readFile(target, 'utf8');
+	} catch {
+		return undefined;
+	}
 }
 
 function normalizeDiffMode(value: string): DiffMode | undefined {
@@ -358,7 +433,7 @@ function handleEvents(id: string, res: ServerResponse): void {
 
 async function loadWebHandler(): Promise<WebHandler> {
 	const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-	if (process.env.PI_PAIR_REVIEW_DEV !== '0') {
+	if (process.env.PI_PAIR_REVIEW_DEV === '1') {
 		try {
 			const { createServer: createViteServer } = await import('vite');
 			const vite = await createViteServer({
@@ -401,8 +476,8 @@ function renderMissingBuildPage(): string {
 	<title>Pi Pair Review</title>
 	<style>
 		body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #0f1115; color: #e7eaf0; }
-		main { max-width: 760px; margin: 12vh auto; padding: 32px; background: #171a21; border: 1px solid #2a2f3a; border-radius: 18px; }
-		code { background: #242a35; border-radius: 6px; padding: 2px 6px; }
+		main { max-width: 760px; margin: 12vh auto; padding: 16px; background: #171a21; border: 1px solid #2a2f3a; }
+		code { background: #242a35; padding: 1px 3px; }
 	</style>
 </head>
 <body>

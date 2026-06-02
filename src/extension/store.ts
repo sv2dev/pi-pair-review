@@ -210,13 +210,14 @@ function buildFeedback(session: ReviewSessionSnapshot | undefined): string {
 	if (!session) return '';
 	const lines: string[] = [];
 	for (const finding of session.preReview.findings) lines.push(formatFeedbackLine(finding.file, finding.line, finding.title));
-	for (const annotation of session.userAnnotations) lines.push(formatFeedbackLine(annotation.file, annotation.line, annotation.body));
+	for (const annotation of session.userAnnotations) lines.push(formatFeedbackLine(annotation.file, annotation.line, annotation.body, annotation.endLine));
 	return lines.join('\n');
 }
 
-function formatFeedbackLine(file: string | undefined, line: number | undefined, body: string): string {
+function formatFeedbackLine(file: string | undefined, line: number | undefined, body: string, endLine?: number): string {
 	const formatted = body.replace(/\n/g, '\n  ');
-	return file ? `- [${file}${line ? `:${line}` : ''}] ${formatted}` : `- ${formatted}`;
+	const lineLabel = line ? endLine && endLine !== line ? `:${line}-${endLine}` : `:${line}` : '';
+	return file ? `- [${file}${lineLabel}] ${formatted}` : `- ${formatted}`;
 }
 
 function emit(id: string): void {

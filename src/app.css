@@ -121,18 +121,16 @@ body {
 }
 
 code {
-	border-radius: 0.3rem;
 	background: var(--code-bg);
-	padding: 0.1rem 0.35rem;
+	padding: 0.05rem 0.175rem;
 	font-family: var(--font-mono);
 	font-size: 0.85em;
 }
 
 /* Review-depth slider accent */
-input[type='range'] {
-	accent-color: var(--accent);
-}
-input[type='checkbox'] {
+input[type='range'],
+input[type='checkbox'],
+input[type='radio'] {
 	accent-color: var(--accent);
 }
 
@@ -147,12 +145,11 @@ input[type='checkbox'] {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		gap: 0.35rem;
+		gap: 0.175rem;
 		border: 1px solid var(--border-strong);
-		border-radius: 0.5rem;
 		background: var(--surface-2);
 		color: var(--fg);
-		padding: 0.3rem 0.6rem;
+		padding: 0.15rem 0.3rem;
 		font-size: 0.8rem;
 		line-height: 1.3;
 		cursor: pointer;
@@ -174,10 +171,9 @@ input[type='checkbox'] {
 
 	textarea {
 		border: 1px solid var(--border-strong);
-		border-radius: 0.6rem;
 		background: var(--bg);
 		color: var(--fg);
-		padding: 0.7rem;
+		padding: 0.35rem;
 		font: 13px/1.55 var(--font-mono);
 		tab-size: 2;
 	}
@@ -228,17 +224,16 @@ input[type='checkbox'] {
 	font-weight: 600;
 }
 :is(.rendered-markdown, .markdown-body, .annotation-md) ul {
-	padding-left: 1.25rem;
+	padding-left: 0.625rem;
 	list-style: disc;
 }
 :is(.rendered-markdown, .markdown-body, .annotation-md) ol {
-	padding-left: 1.25rem;
+	padding-left: 0.625rem;
 	list-style: decimal;
 }
 :is(.rendered-markdown, .markdown-body, .annotation-md) code {
-	border-radius: 0.3rem;
 	background: var(--code-bg);
-	padding: 0.1rem 0.3rem;
+	padding: 0.05rem 0.15rem;
 }
 :is(.rendered-markdown, .markdown-body, .annotation-md) a {
 	color: var(--accent);
@@ -248,7 +243,6 @@ input[type='checkbox'] {
 	max-width: min(100%, 36rem);
 	max-height: 24rem;
 	border: 1px solid var(--border);
-	border-radius: 0.6rem;
 	object-fit: contain;
 }
 
@@ -258,11 +252,10 @@ input[type='checkbox'] {
 .tree-decoration {
 	display: inline-flex;
 	align-items: center;
-	gap: 0.25rem;
+	gap: 0.125rem;
 }
 .tree-badge {
-	border-radius: 999px;
-	padding: 0.05rem 0.4rem;
+	padding: 0.025rem 0.2rem;
 	background: var(--accent-soft);
 	color: var(--accent);
 	font-size: 0.66rem;
@@ -283,7 +276,7 @@ input[type='checkbox'] {
 	container-type: inline-size;
 	min-width: 0;
 	max-width: 100%;
-	padding-left: 4px;
+	padding-left: 2px;
 }
 
 .rendered-file,
@@ -295,21 +288,8 @@ input[type='checkbox'] {
 .rendered-file {
 	position: relative;
 	transition:
-		opacity 0.18s ease,
-		border-color 0.18s ease;
-}
-
-.rendered-file::before {
-	content: '';
-	position: absolute;
-	inset-block: 0;
-	inset-inline-start: -4px;
-	z-index: 2;
-	width: 2px;
-	background: var(--accent);
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity 0.18s ease;
+		border-color 0.18s ease,
+		box-shadow 0.18s ease;
 }
 
 .file-diff-host {
@@ -327,12 +307,9 @@ input[type='checkbox'] {
 	}
 }
 
-.review-has-active-file .rendered-file:not(.review-active-file) {
-	opacity: 0.58;
-}
-
-.review-active-file::before {
-	opacity: 1;
+.review-active-file {
+	border-color: var(--accent) !important;
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .review-active-file .file-collapse-toggle {
@@ -361,7 +338,6 @@ input[type='checkbox'] {
 	left: 50%;
 	width: 0.5rem;
 	height: 0.85rem;
-	border-radius: 0.15rem;
 	background: var(--c, var(--accent));
 	animation: confetti-burst 1.7s ease-out forwards;
 }
@@ -399,8 +375,7 @@ input[type='checkbox'] {
  * ------------------------------------------------------------------ */
 .inline-annotation {
 	margin: 6px 0 8px;
-	padding: 10px 12px;
-	border-radius: 0.6rem;
+	padding: 5px 6px;
 	border: 1px solid var(--border);
 	background: var(--surface);
 	color: var(--fg);
@@ -427,7 +402,7 @@ input[type='checkbox'] {
 	margin: 0;
 }
 .inline-annotation :is(ul, ol) {
-	padding-left: 1.35rem;
+	padding-left: 0.675rem;
 }
 .inline-annotation ul {
 	list-style: disc;
@@ -436,9 +411,8 @@ input[type='checkbox'] {
 	list-style: decimal;
 }
 .inline-annotation code {
-	border-radius: 0.3rem;
 	background: var(--code-bg);
-	padding: 0.1rem 0.25rem;
+	padding: 0.05rem 0.125rem;
 }
 
 /* ------------------------------------------------------------------ *

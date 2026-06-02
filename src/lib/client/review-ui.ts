@@ -62,12 +62,13 @@ export function compareTreeOrder(leftPath: string, rightPath: string) {
 export function buildReviewFeedback(findings: ReviewFinding[], annotations: UserReviewAnnotation[], closingNotes: string) {
 	const lines: string[] = [];
 	for (const finding of findings) lines.push(formatFeedbackLine(finding.file, finding.line, finding.title));
-	for (const annotation of annotations) lines.push(formatFeedbackLine(annotation.file, annotation.line, annotation.body));
+	for (const annotation of annotations) lines.push(formatFeedbackLine(annotation.file, annotation.line, annotation.body, annotation.endLine));
 	if (closingNotes.trim()) lines.push('', closingNotes.trim());
 	return lines.join('\n');
 }
 
-function formatFeedbackLine(file: string | undefined, line: number | undefined, body: string) {
+function formatFeedbackLine(file: string | undefined, line: number | undefined, body: string, endLine?: number) {
 	const formatted = body.replace(/\n/g, '\n  ');
-	return file ? `- [${file}${line ? `:${line}` : ''}] ${formatted}` : `- ${formatted}`;
+	const lineLabel = line ? endLine && endLine !== line ? `:${line}-${endLine}` : `:${line}` : '';
+	return file ? `- [${file}${lineLabel}] ${formatted}` : `- ${formatted}`;
 }
