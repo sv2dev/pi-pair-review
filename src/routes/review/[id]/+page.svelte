@@ -7,7 +7,7 @@
 	import DiffViewer from '$lib/components/DiffViewer.svelte';
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
-	import { Check, ChevronDown, ChevronRight, Clipboard, Edit3, HelpCircle, LoaderCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, MoreVertical, BookOpenText } from '@lucide/svelte';
+	import { Check, ChevronDown, ChevronRight, Clipboard, Edit3, HelpCircle, LoaderCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, BookOpenText } from '@lucide/svelte';
 	import type { SelectedLineRange } from '@pierre/diffs';
 	import type { ReviewAttentionLevel, ReviewDiffMode, ReviewDiffStyle, ReviewFinding, ReviewSessionSnapshot, ReviewUiSettings, UserReviewAnnotation } from '$lib/shared/review';
 
@@ -15,6 +15,7 @@
 	type MarkdownEditorApi = { insertText: (text: string) => void; focus: () => void };
 	type DiffViewerApi = { scrollFile: (direction: 1 | -1) => void; scrollFileAfter: (file: string) => void; scrollComment: (direction: 1 | -1) => void; scrollHunk: (direction: 1 | -1) => void; editActiveComment: () => boolean; currentFile: () => string | undefined };
 	type StoredReviewed = { version: 2; entries: string[] };
+	type ReviewWorktreeOption = { path: string; branch?: string; head?: string; current: boolean };
 
 	let session = $state.raw<ReviewSessionSnapshot | undefined>(undefined);
 	let error = $state<string | undefined>();
@@ -51,10 +52,11 @@
 	let closingNotes = $state('');
 	let reviewLevel = $state<number>(1);
 	let isolatedLevel = $state(false);
-	let viewMenuOpen = $state(false);
 	let diffSourceMode = $state<ReviewDiffMode>('uncommitted');
 	let diffSourceBase = $state('origin/main');
 	let branchRefs = $state.raw<string[]>([]);
+	let worktrees = $state.raw<ReviewWorktreeOption[]>([]);
+	let worktreeCwd = $state('');
 	let diffSourceLoading = $state(false);
 	let diffSourceError = $state<string | undefined>();
 	let diffSourceSessionId = $state<string | undefined>();
@@ -148,6 +150,7 @@
 		selectedFile = undefined;
 		void loadSnapshot(id, abort.signal);
 		void loadBranchRefs(id, abort.signal);
+		void loadWorktrees(id, abort.signal);
 
 		const events = new EventSource(`/api/reviews/${id}/events`);
 		events.addEventListener('snapshot', (event) => {
@@ -211,6 +214,7 @@
 
 	function restoreDiffSource(nextSession: ReviewSessionSnapshot) {
 		diffSourceSessionId = nextSession.id;
+		worktreeCwd = nextSession.cwd;
 		diffSourceMode = nextSession.diffMode ?? 'uncommitted';
 		diffSourceBase = nextSession.diffBase ?? branchRefs[0] ?? 'origin/main';
 		diffSourceError = undefined;
@@ -225,6 +229,18 @@
 			if (!diffSourceBase && branchRefs[0]) diffSourceBase = branchRefs[0];
 		} catch {
 			if (!signal?.aborted) branchRefs = [];
+		}
+	}
+
+	async function loadWorktrees(id = reviewId, signal?: AbortSignal) {
+		try {
+			const response = await fetch(`/api/reviews/${id}/worktrees`, { signal });
+			if (!response.ok) return;
+			if (id !== reviewId || signal?.aborted) return;
+			worktrees = ((await response.json()) as { worktrees: ReviewWorktreeOption[] }).worktrees;
+			if (!worktreeCwd) worktreeCwd = session?.cwd ?? worktrees.find((item) => item.current)?.path ?? worktrees[0]?.path ?? '';
+		} catch {
+			if (!signal?.aborted) worktrees = [];
 		}
 	}
 
@@ -315,6 +331,18 @@
 		return ranks.length > 0 ? Math.min(...ranks.map((rank) => rank.attentionLevel)) : 1;
 	}
 
+	function repositoryLabel(cwd: string) {
+		const parts = cwd.split(/[\\/]/).filter(Boolean);
+		const worktreeIndex = parts.lastIndexOf('.worktrees');
+		if (worktreeIndex > 0) return `${parts[worktreeIndex - 1]} · ${parts[worktreeIndex + 1] ?? 'worktree'}`;
+		return parts.at(-1) ?? cwd;
+	}
+
+	function worktreeLabel(worktree: ReviewWorktreeOption) {
+		const name = worktree.path.split(/[\\/]/).pop() || worktree.path;
+		return worktree.branch ? `${name} · ${worktree.branch}` : name;
+	}
+
 	function celebrateCompletion() {
 		celebrateReviewComplete = true;
 		completionDialog = true;
@@ -395,9 +423,14 @@
 		void changeDiffSource();
 	}
 
-	async function changeDiffSource() {
+	function handleWorktreeChange(event: Event) {
+		worktreeCwd = (event.currentTarget as HTMLSelectElement).value;
+		void changeDiffSource(worktreeCwd);
+	}
+
+	async function changeDiffSource(nextCwd = session?.cwd ?? '') {
 		if (!session || diffSourceLoading || session.preReview.status === 'running') return;
-		if (diffSourceMode === session.diffMode && (diffSourceMode !== 'branch' || diffSourceBase === session.diffBase)) return;
+		if (nextCwd === session.cwd && diffSourceMode === session.diffMode && (diffSourceMode !== 'branch' || diffSourceBase === session.diffBase)) return;
 		if ((userAnnotations.length > 0 || findings.length > 0 || reviewed.size > 0) && !confirm('Change diff source? Existing annotations, highlights, and reviewed markers for this session will be cleared.')) {
 			restoreDiffSource(session);
 			return;
@@ -408,13 +441,16 @@
 			const response = await fetch(`/api/reviews/${reviewId}/diff`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ mode: diffSourceMode, base: diffSourceBase })
+				body: JSON.stringify({ mode: diffSourceMode, base: diffSourceBase, cwd: nextCwd })
 			});
 			if (!response.ok) {
 				const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
 				throw new Error(body?.error ?? 'Failed to change diff source');
 			}
 			session = (await response.json()) as ReviewSessionSnapshot;
+			worktreeCwd = session.cwd;
+			void loadBranchRefs(reviewId);
+			void loadWorktrees(reviewId);
 			reviewLevel = lowestReviewLevel(session.preReview.hunks);
 			reviewLevelResetKey = '';
 			selectedFile = undefined;
@@ -422,6 +458,7 @@
 			localStorage.removeItem(`pi-pair-review:${reviewId}:reviewed`);
 		} catch (changeError) {
 			diffSourceError = changeError instanceof Error ? changeError.message : String(changeError);
+			worktreeCwd = session.cwd;
 		} finally {
 			diffSourceLoading = false;
 		}
@@ -727,37 +764,33 @@
 	<main class="grid min-h-screen place-items-center p-4"><div class="border border-border bg-surface-2 px-2.5 py-2 text-muted">Loading review…</div></main>
 {:else}
 	<div class="grid min-h-screen grid-cols-1 grid-rows-[auto_1fr] {gridColumnsClass}">
-		<header class="sticky top-0 z-40 col-span-full flex items-center justify-between gap-2 border-b border-border bg-bg/95 px-2 backdrop-blur-sm relative" style="min-height: var(--topbar-height)">
+		<header class="sticky top-0 z-40 col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 border-b border-border bg-bg/95 px-2 backdrop-blur-sm relative" style="min-height: var(--topbar-height)">
 			<div class="absolute bottom-0 left-0 h-0.5 w-full overflow-hidden bg-surface-2"><div class="review-progress h-full bg-accent" class:review-progress-complete={celebrateReviewComplete} style={`width: ${reviewProgress}%`}></div></div>
-			<div class="min-w-0">
-				<h1 class="truncate text-[0.95rem] font-semibold">{session.title}</h1>
-				<p class="truncate text-xs text-muted">{session.cwd} · {visibleFiles.length}/{files.length} files · {session.baseDescription}</p>
-			</div>
-			<div class="flex items-center gap-1">
+			<button class="h-8 w-8 p-0" title="Toggle files sidebar (B)" aria-label="Toggle files sidebar" onclick={() => (leftOpen = !leftOpen)}>{#if leftOpen}<PanelLeftClose size={15} />{:else}<PanelLeftOpen size={15} />{/if}</button>
+			<h1 class="min-w-0 truncate text-[0.95rem] font-semibold" title={session.cwd}>{repositoryLabel(session.cwd)}</h1>
+			<div class="flex min-w-0 items-center justify-end gap-1">
+				<label class="hidden items-center gap-1 text-sm text-muted md:flex">View <select class="max-w-28" bind:value={diffStyle}><option value="split">Split</option><option value="unified">Unified</option></select></label>
+				<label class="hidden items-center gap-1 text-sm text-muted lg:flex"><input type="checkbox" bind:checked={wrap} /> Wrap</label>
+				<button title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onclick={() => (shortcutsDialog = true)}><HelpCircle size={15} /></button>
 				<button title="Copy feedback" onclick={copyFeedback}><Clipboard size={15} /><span class="hidden sm:inline">{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</span></button>
 				<button class={allFilesReviewed ? 'border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90' : ''} title="Insert feedback (W or Cmd/Ctrl+Enter)" onclick={() => finish()}><Check size={15} /><span class="hidden sm:inline">Insert feedback</span></button>
-				<button title="Toggle left sidebar (B)" onclick={() => (leftOpen = !leftOpen)}>{#if leftOpen}<PanelLeftClose size={15} />{:else}<PanelLeftOpen size={15} />{/if}<span class="hidden sm:inline">{leftOpen ? 'Hide' : 'Show'} files</span></button>
-				<button title="Toggle right sidebar (Shift+B)" onclick={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}<span class="hidden sm:inline">{rightOpen ? 'Hide' : 'Show'} annotations</span></button>
-				<div class="relative">
-					<button class="h-8 w-8 self-center p-0 leading-none" title="View options" aria-label="View options" onclick={() => (viewMenuOpen = !viewMenuOpen)}><MoreVertical size={18} /></button>
-					{#if viewMenuOpen}
-						<div class="absolute right-0 top-[calc(100%+0.4rem)] z-30 grid min-w-52 gap-[0.3125rem] border border-border-strong bg-surface p-1.5 shadow-[0_12px_32px_var(--shadow)]">
-							<label class="flex items-center justify-between gap-1 text-sm text-muted">View <select bind:value={diffStyle}><option value="split">Split</option><option value="unified">Unified</option></select></label>
-							<label class="flex items-center gap-1 text-sm text-muted"><input type="checkbox" bind:checked={wrap} /> Wrap lines</label>
-							<button type="button" onclick={() => { shortcutsDialog = true; viewMenuOpen = false; }}><HelpCircle size={15} />Keyboard shortcuts</button>
-						</div>
-					{/if}
-				</div>
 			</div>
+			<button class="h-8 w-8 p-0" title="Toggle annotations sidebar (Shift+B)" aria-label="Toggle annotations sidebar" onclick={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}</button>
 		</header>
 
 		{#if leftOpen}
-		<aside class="grid content-start gap-1 border-b border-border bg-bg p-[0.3125rem] lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-auto lg:border-b-0 lg:border-r">
+		<aside class="grid min-w-0 content-start gap-0 overflow-x-hidden border-b border-border bg-bg p-0 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-y-auto lg:border-b-0 lg:border-r">
 			{#if connectionWarning}<section class="border border-warning/40 bg-warning-soft p-[0.3125rem] text-sm text-warning">{connectionWarning}</section>{/if}
 			<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
 				<div class="flex items-center justify-between gap-1.5"><h2 class="text-[0.85rem] font-semibold">Diff source</h2><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{session.diffMode ?? 'diff'}</span></div>
-				<label class="grid gap-0.5 text-sm text-muted">Review
-					<select bind:value={diffSourceMode} disabled={diffSourceLoading || session.preReview.status === 'running'} onchange={handleDiffModeChange}>
+				<label class="grid min-w-0 gap-0.5 text-sm text-muted">Worktree
+					<select class="w-full min-w-0" bind:value={worktreeCwd} disabled={diffSourceLoading || session.preReview.status === 'running'} onchange={handleWorktreeChange}>
+						{#if worktreeCwd && !worktrees.some((worktree) => worktree.path === worktreeCwd)}<option value={worktreeCwd}>{worktreeCwd}</option>{/if}
+						{#each worktrees as worktree (worktree.path)}<option value={worktree.path}>{worktreeLabel(worktree)}{worktree.current ? ' (current)' : ''}</option>{/each}
+					</select>
+				</label>
+				<label class="grid min-w-0 gap-0.5 text-sm text-muted">Review
+					<select class="w-full min-w-0" bind:value={diffSourceMode} disabled={diffSourceLoading || session.preReview.status === 'running'} onchange={handleDiffModeChange}>
 						<option value="unstaged">Unstaged changes</option>
 						<option value="staged">Staged changes</option>
 						<option value="uncommitted">Uncommitted changes</option>
@@ -765,7 +798,7 @@
 						<option value="branch">Branch vs ref</option>
 					</select>
 				</label>
-				{#if diffSourceMode === 'branch'}<label class="grid gap-0.5 text-sm text-muted">Base ref <select bind:value={diffSourceBase} disabled={diffSourceLoading || session.preReview.status === 'running'} onchange={handleBranchRefChange}>{#if diffSourceBase && !branchRefs.includes(diffSourceBase)}<option value={diffSourceBase}>{diffSourceBase}</option>{/if}{#each branchRefs as ref (ref)}<option value={ref}>{ref}</option>{/each}{#if branchRefs.length === 0 && !diffSourceBase}<option value="origin/main">origin/main</option>{/if}</select></label>{/if}
+				{#if diffSourceMode === 'branch'}<label class="grid min-w-0 gap-0.5 text-sm text-muted">Base ref <select class="w-full min-w-0" bind:value={diffSourceBase} disabled={diffSourceLoading || session.preReview.status === 'running'} onchange={handleBranchRefChange}>{#if diffSourceBase && !branchRefs.includes(diffSourceBase)}<option value={diffSourceBase}>{diffSourceBase}</option>{/if}{#each branchRefs as ref (ref)}<option value={ref}>{ref}</option>{/each}{#if branchRefs.length === 0 && !diffSourceBase}<option value="origin/main">origin/main</option>{/if}</select></label>{/if}
 				{#if diffSourceLoading}<p class="text-sm text-muted">Loading source…</p>{/if}
 				{#if diffSourceError}<p class="text-sm text-danger">{diffSourceError}</p>{/if}
 			</section>
@@ -776,12 +809,12 @@
 		</aside>
 		{/if}
 
-		<main class="min-w-0 max-w-full px-1.5 py-[0.3125rem]" style="scroll-padding-top: calc(var(--topbar-height) + 1rem)">
+		<main class="min-w-0 max-w-full p-0" style="scroll-padding-top: calc(var(--topbar-height) + 1rem)">
 			<DiffViewer bind:this={diffViewer} {session} {findings} {hunkRanks} {reviewLevel} {isolatedLevel} reviewed={reviewedFiles} reviewedKeys={reviewed} {selectedFile} {targetFindingId} {targetAnnotationId} {diffStyle} {wrap} onActiveChange={(detail) => { activeFile = detail.file; }} onAnnotate={startLineAnnotation} onAnnotateRange={startLineRangeAnnotation} onFileComment={(file) => (annotationDraft = { scope: 'file', file, body: '' })} onToggleReviewed={toggleReviewed} onEditAnnotation={editAnnotation} onDeleteAnnotation={removeAnnotation} />
 		</main>
 
 		{#if rightOpen}
-			<aside class="grid content-start gap-1 border-t border-border bg-bg p-[0.3125rem] lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] min-w-0 overflow-x-hidden lg:overflow-y-auto lg:border-t-0 lg:border-l">
+			<aside class="grid min-w-0 content-start gap-0 overflow-x-hidden border-t border-border bg-bg p-0 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-y-auto lg:border-t-0 lg:border-l">
 				<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
 					<div class="flex items-center justify-between gap-1.5">
 						<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (aiOpen = !aiOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if aiOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}AI review</h2></button>

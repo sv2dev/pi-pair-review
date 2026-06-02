@@ -1,23 +1,36 @@
 import { getSupportedThinkingLevels, type Model } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { spawn, spawnSync } from 'node:child_process';
-import { buildDiffCommand, summarizePatchFiles } from './diff.ts';
+import { resolve } from 'node:path';
+import { buildDiffCommandFromTokens, splitArgs, summarizePatchFiles } from './diff.ts';
 import { createReviewSession, markHeuristicPreReview } from './store.ts';
 import { closeReviewWebServer, ensureReviewWebServer } from './server.ts';
 import { buildHeuristicPreReview, runPreReview } from './pre-review.ts';
+
+const ACTIVE_CWD_ENTRY = 'pi-active-cwd';
 
 export default function pairReviewExtension(pi: ExtensionAPI) {
 	pi.registerCommand('pair-review', {
 		description: 'Open a guided web code review for the current git diff',
 		getArgumentCompletions: (prefix) => {
-			const options = ['--unstaged', '-u', '--staged', '-s', '--cached', '--uncommitted', '-c', '--branch', '--base', '--target'];
+			const options = ['--cwd', '--unstaged', '-u', '--staged', '-s', '--cached', '--uncommitted', '-c', '--branch', '--base', '--target'];
 			const matches = options.filter((option) => option.startsWith(prefix));
 			return matches.length > 0 ? matches.map((value) => ({ value, label: value })) : null;
 		},
 		handler: async (args, ctx) => {
-			const hasUncommittedChanges = await hasTrackedUncommittedChanges(pi, ctx);
-			const diffCommand = buildDiffCommand(args, { hasUncommittedChanges });
-			const diff = await pi.exec(diffCommand.command[0]!, diffCommand.command.slice(1), { cwd: ctx.cwd, timeout: 30_000 });
+			let parsedArgs: { cwd?: string; diffTokens: string[] };
+			let reviewCwd: string;
+			try {
+				parsedArgs = parseReviewArgs(args);
+				reviewCwd = await resolveReviewCwd(pi, ctx, parsedArgs.cwd);
+			} catch (error) {
+				ctx.ui.notify(error instanceof Error ? error.message : String(error), 'error');
+				return;
+			}
+
+			const hasUncommittedChanges = await hasTrackedUncommittedChanges(pi, reviewCwd);
+			const diffCommand = buildDiffCommandFromTokens(parsedArgs.diffTokens, { hasUncommittedChanges });
+			const diff = await pi.exec(diffCommand.command[0]!, diffCommand.command.slice(1), { cwd: reviewCwd, timeout: 30_000 });
 
 			if (diff.code !== 0) {
 				ctx.ui.notify(diff.stderr || 'Failed to read git diff', 'error');
@@ -35,7 +48,8 @@ export default function pairReviewExtension(pi: ExtensionAPI) {
 
 			const returnFocusApp = getFrontmostAppName();
 			const session = createReviewSession({
-				cwd: ctx.cwd,
+				cwd: reviewCwd,
+				envPwd: process.env.PWD,
 				title: `Review ${diffCommand.baseDescription}`,
 				baseDescription: diffCommand.baseDescription,
 				diffMode: diffCommand.mode,
@@ -71,7 +85,7 @@ export default function pairReviewExtension(pi: ExtensionAPI) {
 
 			const url = server.urlForReview(session.id);
 			openUrl(url);
-			ctx.ui.notify(`Pair review opened: ${url}`, 'info');
+			ctx.ui.notify(`Pair review opened: ${url}${reviewCwd !== ctx.cwd ? ` (${reviewCwd})` : ''}`, 'info');
 		}
 	});
 
@@ -80,8 +94,73 @@ export default function pairReviewExtension(pi: ExtensionAPI) {
 	});
 }
 
-async function hasTrackedUncommittedChanges(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<boolean> {
-	const result = await pi.exec('git', ['diff', '--quiet', 'HEAD', '--'], { cwd: ctx.cwd, timeout: 30_000 });
+function parseReviewArgs(args: string): { cwd?: string; diffTokens: string[] } {
+	const tokens = splitArgs(args.trim());
+	const diffTokens: string[] = [];
+	let cwd: string | undefined;
+
+	for (let index = 0; index < tokens.length; index += 1) {
+		const token = tokens[index]!;
+		if (token === '--cwd') {
+			const value = tokens[index + 1];
+			if (!value) throw new Error('Missing value for --cwd');
+			cwd = value;
+			index += 1;
+			continue;
+		}
+		if (token.startsWith('--cwd=')) {
+			cwd = token.slice('--cwd='.length);
+			if (!cwd) throw new Error('Missing value for --cwd');
+			continue;
+		}
+		diffTokens.push(token);
+	}
+
+	return { cwd, diffTokens };
+}
+
+async function resolveReviewCwd(pi: ExtensionAPI, ctx: ExtensionCommandContext, explicitCwd: string | undefined): Promise<string> {
+	if (explicitCwd) {
+		const cwd = resolve(ctx.cwd, explicitCwd);
+		const gitRoot = await gitTopLevel(pi, cwd);
+		if (!gitRoot) throw new Error(`Not a git worktree: ${cwd}`);
+		return gitRoot;
+	}
+
+	const activeCwd = activeCwdFromSession(ctx);
+	if (activeCwd) {
+		const cwd = resolve(ctx.cwd, activeCwd);
+		const gitRoot = await gitTopLevel(pi, cwd);
+		if (gitRoot) return gitRoot;
+		ctx.ui.notify(`Ignoring invalid ${ACTIVE_CWD_ENTRY}: ${cwd}`, 'warning');
+	}
+
+	return ctx.cwd;
+}
+
+function activeCwdFromSession(ctx: ExtensionCommandContext): string | undefined {
+	const entries = ctx.sessionManager.getEntries() as any[];
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (entry?.type !== 'custom' || entry.customType !== ACTIVE_CWD_ENTRY) continue;
+		const cwd = entry.data?.cwd;
+		if (cwd === null) return undefined;
+		return typeof cwd === 'string' && cwd.trim() ? cwd.trim() : undefined;
+	}
+	return undefined;
+}
+
+async function gitTopLevel(pi: ExtensionAPI, cwd: string): Promise<string | undefined> {
+	try {
+		const result = await pi.exec('git', ['rev-parse', '--show-toplevel'], { cwd, timeout: 10_000 });
+		return result.code === 0 ? result.stdout.trim() || undefined : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function hasTrackedUncommittedChanges(pi: ExtensionAPI, cwd: string): Promise<boolean> {
+	const result = await pi.exec('git', ['diff', '--quiet', 'HEAD', '--'], { cwd, timeout: 30_000 });
 	return result.code === 1;
 }
 

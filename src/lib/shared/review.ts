@@ -75,6 +75,7 @@ export interface ReviewAgentModelOption {
 export interface ReviewSessionSnapshot {
 	id: string;
 	cwd: string;
+	envPwd?: string;
 	createdAt: string;
 	title: string;
 	baseDescription: string;
@@ -102,6 +103,7 @@ export interface ReviewSessionSnapshot {
 
 export interface ReviewSessionCreateInput {
 	cwd: string;
+	envPwd?: string;
 	title: string;
 	baseDescription: string;
 	diffMode?: ReviewDiffMode;

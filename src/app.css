@@ -159,6 +159,11 @@ input[type='radio'] {
 			opacity 0.15s ease;
 	}
 
+	select {
+		max-width: 100%;
+		min-width: 0;
+	}
+
 	button:hover:not(:disabled),
 	select:hover:not(:disabled) {
 		background: var(--surface-hover);

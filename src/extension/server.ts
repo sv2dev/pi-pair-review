@@ -169,6 +169,18 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 		return;
 	}
 
+	if (req.method === 'GET' && tail === 'worktrees') {
+		void (async () => {
+			const session = getReviewSession(id);
+			if (!session) {
+				writeJson(res, 404, { error: 'Review not found' });
+				return;
+			}
+			writeJson(res, 200, { worktrees: await listGitWorktrees(session.cwd) });
+		})().catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
+		return;
+	}
+
 	if (req.method === 'POST' && tail === 'diff') {
 		void readJson(req).then(async (body) => {
 			const session = getReviewSession(id);
@@ -179,12 +191,26 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 			const value = body as Record<string, unknown>;
 			const mode = normalizeDiffMode(typeof value.mode === 'string' ? value.mode : '');
 			const base = typeof value.base === 'string' ? value.base.trim() : undefined;
+			const cwd = typeof value.cwd === 'string' ? value.cwd.trim() : undefined;
 			if (!mode) {
 				writeJson(res, 400, { error: 'Invalid diff mode' });
 				return;
 			}
+			let targetCwd = session.cwd;
+			if (cwd && cwd !== session.cwd) {
+				if (cwd.includes('\0')) {
+					writeJson(res, 400, { error: 'Invalid worktree path' });
+					return;
+				}
+				const worktree = (await listGitWorktrees(session.cwd)).find((item) => resolve(item.path) === resolve(cwd));
+				if (!worktree) {
+					writeJson(res, 400, { error: `Unknown worktree: ${cwd}` });
+					return;
+				}
+				targetCwd = worktree.path;
+			}
 			const diffCommand = buildDiffCommandFromSelection({ mode, base });
-			const diff = await execCommand(diffCommand.command[0]!, diffCommand.command.slice(1), session.cwd, 30_000);
+			const diff = await execCommand(diffCommand.command[0]!, diffCommand.command.slice(1), targetCwd, 30_000);
 			if (diff.code !== 0) {
 				writeJson(res, 400, { error: diff.stderr || 'Failed to read git diff' });
 				return;
@@ -196,6 +222,7 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 			}
 			const heuristicReview = buildHeuristicPreReview(patch);
 			replaceReviewDiff(id, {
+				cwd: targetCwd,
 				title: `Review ${diffCommand.baseDescription}`,
 				baseDescription: diffCommand.baseDescription,
 				diffMode: diffCommand.mode,
@@ -308,6 +335,40 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 
 function normalizeThinkingLevel(value: string) {
 	return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' ? value : 'off';
+}
+
+async function listGitWorktrees(cwd: string): Promise<Array<{ path: string; branch?: string; head?: string; current: boolean }>> {
+	const currentRoot = await readGitTopLevel(cwd) ?? resolve(cwd);
+	const result = await execCommand('git', ['worktree', 'list', '--porcelain'], currentRoot, 10_000);
+	if (result.code !== 0) return [{ path: currentRoot, current: true }];
+	const worktrees: Array<{ path: string; branch?: string; head?: string; current: boolean }> = [];
+	let item: { path?: string; branch?: string; head?: string } = {};
+	const push = () => {
+		if (!item.path) return;
+		worktrees.push({
+			path: item.path,
+			branch: item.branch?.replace(/^refs\/heads\//, ''),
+			head: item.head,
+			current: resolve(item.path) === resolve(currentRoot)
+		});
+		item = {};
+	};
+	for (const line of result.stdout.split('\n')) {
+		if (!line.trim()) {
+			push();
+			continue;
+		}
+		if (line.startsWith('worktree ')) item.path = line.slice('worktree '.length);
+		else if (line.startsWith('HEAD ')) item.head = line.slice('HEAD '.length);
+		else if (line.startsWith('branch ')) item.branch = line.slice('branch '.length);
+	}
+	push();
+	return worktrees.length ? worktrees : [{ path: currentRoot, current: true }];
+}
+
+async function readGitTopLevel(cwd: string): Promise<string | undefined> {
+	const result = await execCommand('git', ['rev-parse', '--show-toplevel'], cwd, 10_000);
+	return result.code === 0 ? result.stdout.trim() || undefined : undefined;
 }
 
 async function readDiffFileContents(session: ReviewSessionSnapshot, file: string, previous: string): Promise<{ oldFile: { name: string; contents: string }; newFile: { name: string; contents: string } }> {

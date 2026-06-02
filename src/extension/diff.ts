@@ -96,7 +96,7 @@ export function trimPatchForModel(patch: string, maxChars = 80_000): string {
 	return `${head}\n\n[... diff truncated for pre-review: ${patch.length - head.length - tail.length} characters omitted ...]\n\n${tail}`;
 }
 
-function splitArgs(input: string): string[] {
+export function splitArgs(input: string): string[] {
 	if (!input) return [];
 	const matches = input.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
 	return matches.map((token) => token.replace(/^["']|["']$/g, ''));

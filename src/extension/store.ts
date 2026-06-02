@@ -104,12 +104,13 @@ export function markPreReviewFailed(id: string, error: string, findings: ReviewF
 	}));
 }
 
-export function replaceReviewDiff(id: string, input: { title: string; baseDescription: string; diffMode: ReviewDiffMode; diffBase?: string; patch: string; files: ReviewFileSummary[]; hunks: ReviewHunkRank[] }): boolean {
+export function replaceReviewDiff(id: string, input: { cwd?: string; title: string; baseDescription: string; diffMode: ReviewDiffMode; diffBase?: string; patch: string; files: ReviewFileSummary[]; hunks: ReviewHunkRank[] }): boolean {
 	let replaced = false;
 	update(id, (snapshot) => {
 		replaced = true;
 		return {
 			...snapshot,
+			cwd: input.cwd ?? snapshot.cwd,
 			title: input.title,
 			baseDescription: input.baseDescription,
 			diffMode: input.diffMode,

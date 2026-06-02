@@ -20,7 +20,10 @@ Commands:
 - `/pair-review --uncommitted` or `/pair-review -c` — review staged and unstaged changes against `HEAD`
 - `/pair-review --branch` — review committed branch changes against `origin/main...HEAD`
 - `/pair-review --branch <base>`, `/pair-review --base <base>`, or `/pair-review <base>` — review committed branch changes against `<base>...HEAD`
+- `/pair-review --cwd <path>` — review from another git worktree; can be combined with the diff options above
 
-The web UI opens immediately. Click **Run** in the agent annotations panel to start an agent review with the selected model and thinking level. Click line numbers to add your own annotations; click **Insert feedback** or close the review page to insert the collected user feedback into Pi's input editor and close the review app.
+Compatible extensions can set the active review cwd by appending a session custom entry named `pi-active-cwd` with `{ "cwd": "/path/to/worktree" }`. Append `{ "cwd": null }` to clear it. Explicit `--cwd` wins.
+
+The web UI opens immediately. Use **Diff source** to switch worktrees or review modes. Click **Run** in the agent annotations panel to start an agent review with the selected model and thinking level. Click line numbers to add your own annotations; click **Insert feedback** or close the review page to insert the collected user feedback into Pi's input editor and close the review app.
 
 This is a test
