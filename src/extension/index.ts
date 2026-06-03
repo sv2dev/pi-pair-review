@@ -28,7 +28,7 @@ export default function pairReviewExtension(pi: ExtensionAPI) {
 				return;
 			}
 
-			const hasUncommittedChanges = await hasTrackedUncommittedChanges(pi, reviewCwd);
+			const hasUncommittedChanges = await hasUncommittedChangesInWorktree(pi, reviewCwd);
 			const diffCommand = buildDiffCommandFromTokens(parsedArgs.diffTokens, { hasUncommittedChanges });
 			const diff = await pi.exec(diffCommand.command[0]!, diffCommand.command.slice(1), { cwd: reviewCwd, timeout: 30_000 });
 
@@ -159,9 +159,11 @@ async function gitTopLevel(pi: ExtensionAPI, cwd: string): Promise<string | unde
 	}
 }
 
-async function hasTrackedUncommittedChanges(pi: ExtensionAPI, cwd: string): Promise<boolean> {
-	const result = await pi.exec('git', ['diff', '--quiet', 'HEAD', '--'], { cwd, timeout: 30_000 });
-	return result.code === 1;
+async function hasUncommittedChangesInWorktree(pi: ExtensionAPI, cwd: string): Promise<boolean> {
+	const tracked = await pi.exec('git', ['diff', '--quiet', 'HEAD', '--'], { cwd, timeout: 30_000 });
+	if (tracked.code === 1) return true;
+	const untracked = await pi.exec('git', ['ls-files', '--others', '--exclude-standard'], { cwd, timeout: 30_000 });
+	return untracked.code === 0 && untracked.stdout.trim().length > 0;
 }
 
 function modelKey(model: Model<any>): string {

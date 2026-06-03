@@ -356,7 +356,7 @@ function classifyHunk(hunk: Omit<ReviewHunkRank, 'attentionLevel' | 'mode' | 're
 }
 
 function isGeneratedPath(path: string): boolean {
-	return /(^|\/)(dist|build|coverage|\.svelte-kit|\.next|\.nuxt|generated|\.generated)(\/|$)/.test(path) || /(?:^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|.*\.log|.*\.min\.(js|css)|.*\.snap)$/.test(path);
+	return /(^|\/)(dist|build|coverage|\.svelte-kit|\.next|\.nuxt|generated|\.generated)(\/|$)/.test(path) || /(?:^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lock|bun\.lockb|.*\.log|.*\.min\.(js|css)|.*\.snap)$/.test(path);
 }
 
 function isStyleOnly(path: string, hunkLines: string[], changed: string[]): boolean {

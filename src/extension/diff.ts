@@ -47,11 +47,31 @@ export function buildDiffCommandFromTokens(tokens: string[], options: { hasUncom
 function diffCommandForMode(mode: DiffMode, base?: string): DiffCommand {
 	const common = ['git', 'diff', '--no-ext-diff', '--find-renames', '--src-prefix=a/', '--dst-prefix=b/'];
 	if (mode === 'staged') return { command: [...common, '--cached'], baseDescription: 'staged changes', mode };
-	if (mode === 'unstaged') return { command: common, baseDescription: 'unstaged changes', mode };
-	if (mode === 'uncommitted') return { command: [...common, 'HEAD'], baseDescription: 'uncommitted changes', mode };
+	if (mode === 'unstaged') return { command: withUntrackedDiff(common), baseDescription: 'unstaged changes', mode };
+	if (mode === 'uncommitted') return { command: withUntrackedDiff([...common, 'HEAD']), baseDescription: 'uncommitted changes', mode };
 	if (mode === 'commit') return { command: [...common, 'HEAD^..HEAD'], baseDescription: 'last commit', mode };
 	const branchBase = base?.trim() || 'origin/main';
 	return { command: [...common, `${branchBase}...HEAD`], baseDescription: `${branchBase}...HEAD`, mode, base: branchBase };
+}
+
+function withUntrackedDiff(trackedDiffCommand: string[]): string[] {
+	const quotedTrackedDiffCommand = trackedDiffCommand.map(shellQuote).join(' ');
+	return [
+		'bash',
+		'-c',
+		`${quotedTrackedDiffCommand}\n` +
+			`status=$?\n` +
+			`if [ "$status" -gt 1 ]; then exit "$status"; fi\n` +
+			`while IFS= read -r -d '' path; do\n` +
+			`  git diff --no-ext-diff --no-index -- /dev/null "$path"\n` +
+			`  status=$?\n` +
+			`  if [ "$status" -gt 1 ]; then exit "$status"; fi\n` +
+			`done < <(git ls-files --others --exclude-standard -z)`
+	];
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 export function summarizePatchFiles(patch: string): ReviewFileSummary[] {
