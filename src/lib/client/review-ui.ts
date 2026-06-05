@@ -1,46 +1,83 @@
-import { isReviewableImagePath } from '$lib/shared/images';
-import type { ReviewAttentionLevel, ReviewFileSummary, ReviewFinding, ReviewHunkRank, ReviewMode, UserReviewComment } from '$lib/shared/review';
+import type { ReviewChunk, ReviewFileSummary, ReviewPart, ReviewSessionSnapshot, ReviewSortOrder, ReviewStrategy } from '$lib/shared/review';
 
-export interface ReviewModeOption {
-	level: ReviewAttentionLevel;
-	mode: ReviewMode;
-	label: string;
-	description: string;
-	count?: number;
+export interface ReviewPartition {
+	parts: ReviewPart[];
+	chunks: ReviewChunk[];
 }
 
-export function availableReviewLevelOptions(ranks: ReviewHunkRank[]): ReviewModeOption[] {
-	const levels = ranks.length > 0 ? [...new Set(ranks.map((rank) => rank.attentionLevel))].sort((left, right) => left - right) : [1, 2, 3, 4, 5] as ReviewAttentionLevel[];
-	return levels.map((level) => {
-		const levelRanks = ranks.filter((rank) => rank.attentionLevel === level);
-		return { ...reviewModeOption(levelRanks[0]?.mode ?? modeForLevel(level), level), count: levelRanks.length };
-	});
+export function buildPartition(strategy: ReviewStrategy, snapshot: ReviewSessionSnapshot): ReviewPartition {
+	if (strategy === 'smart') {
+		const smart = snapshot.preReview.smart;
+		return smart ? { parts: [...smart.parts], chunks: [...smart.chunks] } : { parts: [], chunks: [] };
+	}
+	if (strategy === 'commits') {
+		const commits = snapshot.commits ?? [];
+		const parts: ReviewPart[] = commits.map((commit) => ({
+			id: `part-commit-${commit.sha}`,
+			kind: 'commit',
+			title: commit.subject,
+			brief: commit.body,
+			order: commit.order,
+			commitSha: commit.sha
+		}));
+		const chunks: ReviewChunk[] = commits.flatMap((commit, index) => chunksFromHunkIds(commit.hunkIds, snapshot, parts[index]!.id));
+		return { parts, chunks };
+	}
+	const part: ReviewPart = { id: 'part-flat', kind: 'flat', title: 'All changes', order: 0 };
+	const chunks = chunksFromHunkIds(snapshot.hunks.map((hunk) => hunk.id), snapshot, part.id);
+	return { parts: [part], chunks };
 }
 
-export function modeForLevel(level: number): ReviewMode {
-	return level === 1 ? 'deep-focus' : level === 2 ? 'careful' : level === 3 ? 'standard' : level === 4 ? 'glance' : 'background';
+function chunksFromHunkIds(hunkIds: string[], snapshot: ReviewSessionSnapshot, partId: string): ReviewChunk[] {
+	const byFile = new Map<string, string[]>();
+	const fileForHunk = new Map(snapshot.hunks.map((hunk) => [hunk.id, hunk.file] as const));
+	for (const hunkId of hunkIds) {
+		const file = fileForHunk.get(hunkId);
+		if (!file) continue;
+		const existing = byFile.get(file);
+		if (existing) existing.push(hunkId);
+		else byFile.set(file, [hunkId]);
+	}
+	return [...byFile.entries()].map(([file, ids]) => ({ id: `${partId}:${file}`, partId, file, hunkIds: ids }));
 }
 
-export function reviewModeOption(mode: ReviewMode, level = 1): ReviewModeOption {
-	const data: Record<ReviewMode, { label: string; description: string }> = {
-		'deep-focus': { label: 'Deep focus', description: 'Highest-risk correctness, security, data, and contract changes' },
-		careful: { label: 'Careful', description: 'Important domain, API, or large implementation changes' },
-		standard: { label: 'Standard', description: 'Normal implementation review' },
-		glance: { label: 'Glance', description: 'Quick check for style-only or low-risk UI changes' },
-		background: { label: 'Background', description: 'Generated, docs, fixtures, snapshots, and other low-signal changes' }
-	};
-	return { level: Number(level) as ReviewAttentionLevel, mode, ...data[mode] };
+export function orderChunks(chunks: ReviewChunk[], sort: ReviewSortOrder, causalityOrder?: string[]): ReviewChunk[] {
+	if (sort === 'causality' && causalityOrder && causalityOrder.length > 0) {
+		const rankFor = (chunk: ReviewChunk) => {
+			let rank = Number.POSITIVE_INFINITY;
+			for (const hunkId of chunk.hunkIds) {
+				const index = causalityOrder.indexOf(hunkId);
+				if (index >= 0 && index < rank) rank = index;
+			}
+			return rank;
+		};
+		return [...chunks].sort((left, right) => {
+			const leftRank = rankFor(left);
+			const rightRank = rankFor(right);
+			if (leftRank !== rightRank) return leftRank - rightRank;
+			return compareTreeOrder(left.file, right.file);
+		});
+	}
+	return [...chunks].sort((left, right) => compareTreeOrder(left.file, right.file));
 }
 
-export function filterFilesForReviewLevel(files: ReviewFileSummary[], ranks: ReviewHunkRank[], level: number, isolatedLevel: boolean) {
-	if (ranks.length === 0) return files;
-	const visible = new Set(ranks.filter((rank) => isolatedLevel ? rank.attentionLevel === Number(level) : rank.attentionLevel <= Number(level)).map((rank) => rank.file));
-	return files.filter((file) => visible.has(file.path) || (file.previousPath && visible.has(file.previousPath)) || isUnrankedImageFile(file, ranks));
+export function chunksForPart(chunks: ReviewChunk[], partId: string): ReviewChunk[] {
+	return chunks.filter((chunk) => chunk.partId === partId);
 }
 
-function isUnrankedImageFile(file: ReviewFileSummary, ranks: ReviewHunkRank[]) {
-	if (!isReviewableImagePath(file.path) && !isReviewableImagePath(file.previousPath)) return false;
-	return !ranks.some((rank) => rank.file === file.path || rank.file === file.previousPath);
+export function partsInOrder(parts: ReviewPart[]): ReviewPart[] {
+	return [...parts].sort((left, right) => left.order - right.order);
+}
+
+export function availableStrategies(snapshot: ReviewSessionSnapshot): ReviewStrategy[] {
+	const strategies: ReviewStrategy[] = ['flat'];
+	if (snapshot.preReview.smart) strategies.push('smart');
+	if (snapshot.commits?.length) strategies.push('commits');
+	return strategies;
+}
+
+export function causalityAvailable(snapshot: ReviewSessionSnapshot): boolean {
+	return !!snapshot.preReview.causalityOrder?.length;
 }
 
 export function sortFilesForTree(files: ReviewFileSummary[]) {
@@ -65,16 +102,3 @@ export function compareTreeOrder(leftPath: string, rightPath: string) {
 	return 0;
 }
 
-export function buildReviewFeedback(findings: ReviewFinding[], comments: UserReviewComment[], closingNotes: string) {
-	const lines: string[] = [];
-	for (const finding of findings) lines.push(formatFeedbackLine(finding.file, finding.line, finding.title));
-	for (const comment of comments) lines.push(formatFeedbackLine(comment.file, comment.line, comment.body, comment.endLine));
-	if (closingNotes.trim()) lines.push('', closingNotes.trim());
-	return lines.join('\n');
-}
-
-function formatFeedbackLine(file: string | undefined, line: number | undefined, body: string, endLine?: number) {
-	const formatted = body.replace(/\n/g, '\n  ');
-	const lineLabel = line ? endLine && endLine !== line ? `:${line}-${endLine}` : `:${line}` : '';
-	return file ? `- [${file}${lineLabel}] ${formatted}` : `- ${formatted}`;
-}

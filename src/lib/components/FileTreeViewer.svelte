@@ -3,12 +3,14 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import { FileTree, type GitStatusEntry } from '@pierre/trees';
 	import CircularCheckProgress from './CircularCheckProgress.svelte';
-	import type { ReviewFileSummary } from '$lib/shared/review';
+	import { compareTreeOrder } from '$lib/client/review-ui';
+	import type { ReviewChunk, ReviewFileSummary } from '$lib/shared/review';
 
 	type ReviewProgressUnits = { reviewed: number; total: number };
 
 	let {
 		files = [],
+		chunks = [],
 		selectedFile,
 		activeFile,
 		reviewed = new SvelteSet<string>(),
@@ -19,6 +21,7 @@
 		onSetReviewed
 	}: {
 		files?: ReviewFileSummary[];
+		chunks?: ReviewChunk[];
 		selectedFile?: string;
 		activeFile?: string;
 		reviewed?: Set<string>;
@@ -36,12 +39,13 @@
 	let reviewControlsFrame: number | undefined;
 	let renderingReviewControls = false;
 
-	let paths = $derived(files.map((file) => file.path));
-	let rootProgressUnits = $derived(progressUnitsFor(paths));
+	let chunkCountByFile = $derived(countChunksByFile(chunks));
+	let paths = $derived([...files].sort((left, right) => compareTreeOrder(left.path, right.path)).map((file) => file.path));
+	let rootProgressUnits = $derived(progressUnitsForFiles(files.map((file) => file.path)));
 	let rootProgress = $derived(rootProgressUnits.total ? Math.round((rootProgressUnits.reviewed / rootProgressUnits.total) * 100) : 0);
 	let rootReviewed = $derived(rootProgressUnits.total > 0 && rootProgressUnits.reviewed >= rootProgressUnits.total);
 	let treeKey = $derived(`${paths.join('\n')}|${files.map((file) => `${file.path}:${file.changeType}`).join('\n')}|${selectedFile ?? ''}`);
-	let reviewControlsKey = $derived(`${[...reviewed].sort().join('\n')}|${[...progress.entries()].map(([path, value]) => `${path}:${value}`).sort().join('\n')}|${[...progressUnits.entries()].map(([path, value]) => `${path}:${value.reviewed}/${value.total}`).sort().join('\n')}`);
+	let reviewControlsKey = $derived(`${[...reviewed].sort().join('\n')}|${[...progress.entries()].map(([path, value]) => `${path}:${value}`).sort().join('\n')}|${[...progressUnits.entries()].map(([path, value]) => `${path}:${value.reviewed}/${value.total}`).sort().join('\n')}|${[...chunkCountByFile.entries()].map(([file, count]) => `${file}:${count}`).join('\n')}`);
 
 	$effect(() => {
 		if (mounted && treeKey) renderTree();
@@ -75,7 +79,7 @@
 			initialExpansion: 'open',
 			initialSelectedPaths: selectedFile ? [selectedFile] : [],
 			density: 'compact',
-			icons: 'standard',
+			icons: 'complete',
 			gitStatus: files.map((file): GitStatusEntry => ({ path: file.path, status: gitStatus(file.changeType) })),
 			unsafeCSS: treeThemeCss(),
 			onSelectionChange: (selected) => onSelect?.(selected[0])
@@ -125,29 +129,9 @@
 				if (!path || (type !== 'file' && type !== 'folder')) continue;
 				const targetFiles = type === 'file' ? [path] : descendantFiles(path);
 				if (targetFiles.length === 0) continue;
-				const icon = row.querySelector<HTMLElement>('[data-item-section="icon"]');
-				if (!icon) continue;
-				const units = progressUnitsFor(targetFiles);
-				const value = units.total ? Math.round((units.reviewed / units.total) * 100) : type === 'file' ? progress.get(path) ?? 0 : 0;
+				const units = progressUnitsForFiles(targetFiles);
 				const isReviewed = units.total > 0 && units.reviewed >= units.total;
-				const marker = ensureReviewMarker(icon);
-				const wasReviewed = marker.classList.contains('reviewed');
-				marker.classList.toggle('reviewed', isReviewed);
-				marker.classList.remove('review-marker-animate');
-				if (!wasReviewed && isReviewed) {
-					void marker.offsetWidth;
-					marker.classList.add('review-marker-animate');
-				}
-				marker.title = `${value}% reviewed`;
-				marker.setAttribute('aria-label', `${path} ${value}% reviewed`);
-				marker.style.setProperty('--tree-review-progress-offset', String(100 - value));
-				marker.style.setProperty('--tree-review-progress-opacity', value > 0 ? '1' : '0');
-				marker.onclick = (event) => {
-					event.preventDefault();
-					event.stopPropagation();
-					if (type === 'file') onToggleReviewed?.(path);
-					else onSetReviewed?.(targetFiles, !isReviewed);
-				};
+				row.classList.toggle('tree-reviewed-row', isReviewed);
 			}
 		} finally {
 			queueMicrotask(() => {
@@ -156,28 +140,20 @@
 		}
 	}
 
-	function ensureReviewMarker(icon: HTMLElement) {
-		const existing = icon.querySelector<HTMLButtonElement>('.tree-reviewed-toggle');
-		if (existing) return existing;
-		const marker = document.createElement('button');
-		marker.type = 'button';
-		marker.className = 'tree-reviewed-toggle';
-		marker.onmousedown = (event) => {
-			event.preventDefault();
-			event.stopPropagation();
-		};
-		marker.innerHTML = `<svg class="tree-review-marker" viewBox="0 0 24 24" aria-hidden="true"><circle class="tree-review-marker-ring" pathLength="100" cx="12" cy="12" r="10.75"></circle><path class="tree-review-marker-check" pathLength="100" d="M18.5 7.25 10 16.25 5.5 12"></path></svg>`;
-		icon.replaceChildren(marker);
-		return marker;
-	}
 
 	function descendantFiles(directory: string) {
 		const prefix = directory.endsWith('/') ? directory : `${directory}/`;
 		return files.filter((file) => file.path.startsWith(prefix)).map((file) => file.path);
 	}
 
-	function progressUnitsFor(paths: string[]) {
-		return paths.reduce((total, path) => {
+	function countChunksByFile(chunks: ReviewChunk[]) {
+		const byFile = new Map<string, number>();
+		for (const chunk of chunks) byFile.set(chunk.file, (byFile.get(chunk.file) ?? 0) + 1);
+		return byFile;
+	}
+
+	function progressUnitsForFiles(filePaths: string[]) {
+		return filePaths.reduce((total, path) => {
 			const units = progressUnits.get(path);
 			return units ? { reviewed: total.reviewed + units.reviewed, total: total.total + units.total } : total;
 		}, { reviewed: 0, total: 0 });
@@ -202,76 +178,13 @@
 				--trees-theme-list-active-selection-fg: var(--fg);
 				--trees-theme-list-hover-bg: var(--surface-hover);
 				--trees-theme-focus-ring: var(--accent);
-				--trees-theme-git-added-fg: var(--accent);
-				--trees-theme-git-modified-fg: var(--accent);
-				--trees-theme-git-deleted-fg: var(--danger);
+				--trees-theme-git-added-fg: var(--fg);
+				--trees-theme-git-modified-fg: var(--fg);
+				--trees-theme-git-deleted-fg: var(--fg);
 			}
-			[data-item-git-status], [data-item-contains-git-change="true"] [data-item-section="git"] { color: var(--accent) !important; }
-			[data-item-git-status="deleted"] { color: var(--danger) !important; }
-			[data-item-selected], .tree-active-row { background: var(--accent-soft) !important; color: var(--fg) !important; }
-			.tree-reviewed-toggle {
-				display: inline-grid;
-				place-items: center;
-				width: 1rem;
-				height: 1rem;
-				min-width: 1rem;
-				min-height: 1rem;
-				margin: 0;
-				padding: 0;
-				border: 0;
-				background: transparent;
-				color: var(--muted);
-				cursor: pointer;
-				line-height: 0;
-			}
-			.tree-reviewed-toggle.reviewed,
-			.tree-reviewed-toggle:hover {
-				color: var(--accent);
-			}
-			.tree-review-marker {
-				display: block;
-				width: 1rem;
-				height: 1rem;
-				overflow: visible;
-			}
-			.tree-review-marker-ring {
-				fill: none;
-				stroke: var(--accent);
-				stroke-width: 2;
-				stroke-linecap: round;
-				stroke-dasharray: 100;
-				stroke-dashoffset: var(--tree-review-progress-offset, 100);
-				opacity: var(--tree-review-progress-opacity, 0);
-				transform: rotate(-90deg);
-				transform-origin: center;
-				transition:
-					stroke-dashoffset 0.35s ease,
-					opacity 0.12s ease;
-			}
-			.tree-review-marker-check {
-				fill: none;
-				stroke: currentColor;
-				stroke-width: 2.25;
-				stroke-linecap: round;
-				stroke-linejoin: round;
-				stroke-dasharray: 100;
-				stroke-dashoffset: 0;
-				transition: stroke 0.15s ease;
-			}
-			.tree-reviewed-toggle.review-marker-animate .tree-review-marker-ring {
-				animation: tree-review-ring-draw 0.35s ease-out;
-			}
-			.tree-reviewed-toggle.review-marker-animate .tree-review-marker-check {
-				animation: tree-review-check-draw 0.35s ease-out;
-			}
-			@keyframes tree-review-ring-draw {
-				0% { stroke-dashoffset: 100; opacity: 0; }
-				100% { stroke-dashoffset: var(--tree-review-progress-offset, 0); opacity: var(--tree-review-progress-opacity, 1); }
-			}
-			@keyframes tree-review-check-draw {
-				0% { stroke-dashoffset: 100; opacity: 0.35; }
-				100% { stroke-dashoffset: 0; opacity: 1; }
-			}
+			[data-item-git-status], [data-item-contains-git-change="true"] [data-item-section="git"] { color: var(--fg) !important; }
+			.tree-reviewed-row, .tree-reviewed-row [data-item-section], .tree-reviewed-row [data-item-git-status], .tree-reviewed-row[data-item-contains-git-change="true"] [data-item-section="git"] { color: var(--review) !important; }
+			[data-item-selected], .tree-active-row { background: var(--review-soft) !important; color: var(--fg) !important; }
 		`;
 	}
 
@@ -282,7 +195,7 @@
 
 <div class="mb-1 grid grid-cols-[auto_minmax(0,1fr)] items-center bg-surface-2 {!selectedFile ? 'bg-surface-hover font-medium' : ''}">
 	<button
-		class="grid h-7 w-7 place-items-center border-0 bg-transparent p-0 hover:bg-surface-hover"
+		class="grid h-7 w-7 place-items-center border-0 bg-transparent p-0 text-review hover:bg-surface-hover"
 		title={`${rootProgress}% reviewed`}
 		aria-label={`All files ${rootProgress}% reviewed`}
 		onclick={(event) => {

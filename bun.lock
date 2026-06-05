@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "pi-pair-review",
+      "name": "story-review",
       "dependencies": {
         "@codemirror/commands": "latest",
         "@codemirror/lang-markdown": "latest",

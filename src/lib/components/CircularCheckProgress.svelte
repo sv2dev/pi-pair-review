@@ -5,12 +5,14 @@
 		progress = 0,
 		size = 20,
 		iconSize = 15,
+		showCheck = true,
 		class: className = '',
 		title
 	}: {
 		progress?: number;
 		size?: number;
 		iconSize?: number;
+		showCheck?: boolean;
 		class?: string;
 		title?: string;
 	} = $props();
@@ -21,8 +23,9 @@
 </script>
 
 <span class="circular-check-progress {className}" style:--circular-check-size={`${size}px`} style:--circular-check-progress-offset={progressOffset} style:--circular-check-progress-opacity={progressOpacity} {title}>
-	<Check size={iconSize} />
+	{#if showCheck}<Check size={iconSize} />{/if}
 	<svg class="circular-check-progress-circle" viewBox="0 0 24 24" aria-hidden="true">
+		<circle class="circular-check-progress-background" cx="12" cy="12" r="10" />
 		<circle class="circular-check-progress-path" pathLength="100" cx="12" cy="12" r="10" />
 	</svg>
 </span>
@@ -52,10 +55,18 @@
 		transform: rotate(-90deg);
 	}
 
+	.circular-check-progress-background,
 	.circular-check-progress-path {
 		fill: none;
-		stroke: var(--circular-check-progress-color, var(--accent));
+		stroke: var(--circular-check-progress-color, var(--review));
 		stroke-width: 2;
+	}
+
+	.circular-check-progress-background {
+		opacity: var(--circular-check-progress-background-opacity, 0.18);
+	}
+
+	.circular-check-progress-path {
 		stroke-linecap: round;
 		stroke-dasharray: 100;
 		stroke-dashoffset: var(--circular-check-progress-offset, 100);

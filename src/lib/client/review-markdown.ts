@@ -40,12 +40,7 @@ const ALLOWED_TAGS = new Set([
 
 export function renderReviewMarkdown(markdown: string, reviewId: string, fallback = ''): string {
 	const source = markdown.trim() || fallback;
-	const safeMarkdown = escapeRawHtml(renderableMarkdown(source, reviewId));
-	return sanitizeRenderedHtml(marked.parse(safeMarkdown, { async: false, gfm: true, breaks: true }) as string);
-}
-
-function escapeRawHtml(markdown: string) {
-	return markdown.replace(/[<>]/g, (char) => char === '<' ? '&lt;' : '&gt;');
+	return sanitizeRenderedHtml(marked.parse(renderableMarkdown(source, reviewId), { async: false, gfm: true, breaks: true }) as string);
 }
 
 function renderableMarkdown(markdown: string, reviewId: string) {

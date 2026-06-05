@@ -3,20 +3,22 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import { page } from '$app/state';
 	import { renderReviewMarkdown } from '$lib/client/review-markdown';
-	import { availableReviewLevelOptions, buildReviewFeedback, filterFilesForReviewLevel, modeForLevel, reviewModeOption, sortFilesForTree } from '$lib/client/review-ui';
+	import { availableStrategies, buildPartition, causalityAvailable, orderChunks, partsInOrder, sortFilesForTree } from '$lib/client/review-ui';
+	import { buildReviewFeedback } from '$lib/shared/feedback';
 	import { isReviewableImagePath } from '$lib/shared/images';
+	import Button from '$lib/components/Button.svelte';
 	import CircularCheckProgress from '$lib/components/CircularCheckProgress.svelte';
 	import DiffViewer from '$lib/components/DiffViewer.svelte';
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
-	import { Check, ChevronDown, ChevronRight, Clipboard, Edit3, HelpCircle, LoaderCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, BookOpenText } from '@lucide/svelte';
+	import { Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, Edit3, HelpCircle, LoaderCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, BookOpenText, SquareSplitHorizontal, TextWrap } from '@lucide/svelte';
 	import type { SelectedLineRange } from '@pierre/diffs';
-	import type { ReviewAttentionLevel, ReviewDiffMode, ReviewDiffStyle, ReviewFinding, ReviewSessionSnapshot, ReviewUiSettings, UserReviewComment } from '$lib/shared/review';
+	import type { ReviewChunk, ReviewDiffMode, ReviewDiffStyle, ReviewFinding, ReviewSessionSnapshot, ReviewSortOrder, ReviewStrategy, ReviewUiSettings, UserReviewComment } from '$lib/shared/review';
 
 	type CommentDraft = { id?: string; scope: 'global' | 'file' | 'line'; file?: string; line?: number; side?: 'additions' | 'deletions'; endLine?: number; endSide?: 'additions' | 'deletions'; body: string };
 	type MarkdownEditorApi = { insertText: (text: string) => void; focus: () => void };
 	type DiffViewerApi = { scrollFile: (direction: 1 | -1) => void; scrollFileAfter: (file: string) => void; scrollComment: (direction: 1 | -1) => void; scrollHunk: (direction: 1 | -1) => void; editActiveComment: () => boolean; currentFile: () => string | undefined };
-	type StoredReviewed = { version: 2; entries: string[] };
+	type StoredReviewed = { version: 3; entries: string[] };
 	type ReviewWorktreeOption = { path: string; branch?: string; head?: string; current: boolean };
 
 	let session = $state.raw<ReviewSessionSnapshot | undefined>(undefined);
@@ -36,7 +38,8 @@
 	let agentModelKey = $state('');
 	let agentThinkingLevel = $state('off');
 	let suggestComments = $state(true);
-	let autoReview = $state(false);
+	let autorunEnabled = $state(false);
+	let autorunSettings = $state<NonNullable<ReviewUiSettings['autorun']> | undefined>(undefined);
 	let autoReviewArmed = $state(false);
 	let autoStartedSessionId = $state<string | undefined>();
 	let aiOpen = $state(false);
@@ -50,15 +53,23 @@
 	let shortcutsDialog = $state(false);
 	let agentDefaultsSessionId = $state<string | undefined>();
 	let agentDefaultsRestoringSessionId = $state<string | undefined>();
-	let reviewLevelResetKey = $state('');
+	let strategyDefaultsKey = $state('');
 	let finished = $state(false);
 	let copied = $state(false);
 	let copyFailed = $state(false);
 	let celebrateReviewComplete = $state(false);
 	let completionDialog = $state(false);
 	let closingNotes = $state('');
-	let reviewLevel = $state<number>(1);
-	let isolatedLevel = $state(false);
+	let strategy = $state<ReviewStrategy>('flat');
+	let sortOrder = $state<ReviewSortOrder>('tree');
+	let cueEnabled = $state(true);
+	let isolatedPart = $state(false);
+	let autoAdvance = $state(false);
+	let currentPartIndex = $state(0);
+	let animatePartTransition = $state(false);
+	let partTransitionDirection = $state<1 | -1>(1);
+	let partTransitionTimer: ReturnType<typeof setTimeout> | undefined;
+	let smartAutoSwitched = $state<string | undefined>();
 	let diffSourceMode = $state<ReviewDiffMode>('uncommitted');
 	let diffSourceBase = $state('origin/main');
 	let branchRefs = $state.raw<string[]>([]);
@@ -67,8 +78,8 @@
 	let diffSourceLoading = $state(false);
 	let diffSourceError = $state<string | undefined>();
 	let diffSourceSessionId = $state<string | undefined>();
-	let summaryDialog = $state(false);
-	let summaryOpenedForSession = $state<string | undefined>();
+	let overviewDialog = $state(false);
+	let overviewOpenedForSession = $state<string | undefined>();
 	let targetFindingId = $state<string | undefined>();
 	let targetCommentId = $state<string | undefined>();
 	let highlightedEntryId = $state<string | undefined>();
@@ -88,18 +99,31 @@
 	let reviewId = $derived(page.params.id);
 	let files = $derived(session?.files ?? []);
 	let findings = $derived(session?.preReview.findings ?? []);
-	let hunkRanks = $derived(session?.preReview.hunks ?? []);
+	let hunks = $derived(session?.hunks ?? []);
 	let hasAgentReview = $derived(session?.preReview.status === 'done' && !!session.preReview.model);
-	let reviewLevelOptions = $derived(availableReviewLevelOptions(hunkRanks));
-	let currentReviewMode = $derived(reviewLevelOptions.find((option) => option.level === Number(reviewLevel)) ?? reviewModeOption(modeForLevel(reviewLevel), reviewLevel));
-	let visibleFiles = $derived(sortFilesForTree(filterFilesForReviewLevel(files, hunkRanks, reviewLevel, isolatedLevel)));
+	let strategies = $derived(session ? availableStrategies(session) : (['flat'] as ReviewStrategy[]));
+	let canCausality = $derived(session ? causalityAvailable(session) : false);
+	let partition = $derived(session ? buildPartition(strategy, session) : { parts: [], chunks: [] });
+	let orderedParts = $derived(partsInOrder(partition.parts));
+	let multiPart = $derived(orderedParts.length > 1);
+	let safePartIndex = $derived(orderedParts.length > 0 ? Math.min(currentPartIndex, orderedParts.length - 1) : 0);
+	let currentPart = $derived(orderedParts[safePartIndex]);
+	let currentPartKey = $derived(`${strategy}:${currentPart?.id ?? safePartIndex}`);
+	let nextPart = $derived(orderedParts[safePartIndex + 1]);
+	let hasNextPart = $derived(nextPart !== undefined);
+	let currentPartComplete = $derived(isCurrentPartComplete());
+	let singlePartInView = $derived(orderedParts.length <= 1 || isolatedPart || safePartIndex === 0);
+	let visibleParts = $derived(isolatedPart && currentPart ? [currentPart] : orderedParts.slice(0, safePartIndex + 1));
+	let visiblePartIds = $derived(new SvelteSet(visibleParts.map((part) => part.id)));
+	let visibleChunks = $derived(orderChunks(partition.chunks.filter((chunk) => visiblePartIds.has(chunk.partId)), sortOrder, session?.preReview.causalityOrder));
+	let visibleHunkIds = $derived(new SvelteSet(visibleChunks.flatMap((chunk) => chunk.hunkIds)));
+	let visibleFileSet = $derived(new SvelteSet(visibleChunks.map((chunk) => chunk.file)));
+	let visibleFiles = $derived(sortFilesForTree(files.filter((file) => visibleFileSet.has(file.path) || (file.previousPath && visibleFileSet.has(file.previousPath)))));
 	let userComments = $derived(session?.userComments ?? []);
-	let reviewedFiles = $derived(new SvelteSet(files.filter((file) => isFileReviewed(file.path)).map((file) => file.path)));
+	let reviewedFiles = $derived(new SvelteSet(visibleFiles.filter((file) => isFileReviewed(file.path)).map((file) => file.path)));
 	let reviewedFileCount = $derived(visibleFiles.filter((file) => reviewedFiles.has(file.path)).length);
-	let reviewUnits = $derived(allReviewUnits());
-	let reviewedReviewUnitCount = $derived(reviewUnits.filter((unit) => reviewed.has(reviewedKey(unit.file, unit.level))).length);
-	let reviewProgress = $derived(reviewUnits.length ? Math.round((reviewedReviewUnitCount / reviewUnits.length) * 100) : 0);
-	let reviewScopeComplete = $derived(reviewUnits.length > 0 && reviewedReviewUnitCount >= reviewUnits.length);
+	let reviewProgress = $derived(hunks.length ? Math.round(([...reviewed].filter((id) => hunks.some((hunk) => hunk.id === id)).length / hunks.length) * 100) : 0);
+	let reviewScopeComplete = $derived(hunks.length > 0 && hunks.every((hunk) => reviewed.has(hunk.id)));
 	let fileReviewUnits = $derived(fileReviewUnitMap());
 	let fileReviewProgress = $derived(new Map([...fileReviewUnits].map(([file, units]) => [file, units.total ? Math.round((units.reviewed / units.total) * 100) : 0] as const)));
 	let feedbackText = $derived(buildReviewFeedback(findings, userComments, closingNotes));
@@ -107,16 +131,20 @@
 		? rightOpen ? 'lg:grid-cols-[17rem_minmax(0,1fr)_19rem]' : 'lg:grid-cols-[17rem_minmax(0,1fr)]'
 		: rightOpen ? 'lg:grid-cols-[minmax(0,1fr)_19rem]' : 'lg:grid-cols-[minmax(0,1fr)]');
 	let selectedAgentModel = $derived(session?.agentReview.models.find((model) => model.key === agentModelKey));
-	let reviewSettingsJson = $derived(JSON.stringify({ modelKey: agentModelKey, thinkingLevel: agentThinkingLevel, suggestComments, autoReview, isolatedLevel, diffStyle, wrap }));
-	let reviewRanksKey = $derived(`${session?.id ?? ''}:${hunkRanks.map((rank) => `${rank.id}:${rank.file}:${rank.oldStart}:${rank.oldLines}:${rank.newStart}:${rank.newLines}:${rank.attentionLevel}`).join('|')}`);
+	let selectedWorktree = $derived(worktrees.find((worktree) => worktree.path === worktreeCwd));
+	let preferredBranchBase = $derived(selectPreferredBranchBase(branchRefs, selectedWorktree?.branch));
+	let reviewSettingsJson = $derived(JSON.stringify({ modelKey: agentModelKey, thinkingLevel: agentThinkingLevel, suggestComments, strategy, sortOrder, cueEnabled, autorun: { ...(autorunSettings ?? { enabled: false, unconditional: false }), enabled: autorunEnabled }, isolatedPart, autoAdvance, diffStyle, wrap }));
 
 	$effect(() => {
-		if (hunkRanks.length > 0 && reviewRanksKey !== reviewLevelResetKey) {
-			reviewLevelResetKey = reviewRanksKey;
-			reviewLevel = lowestReviewLevel(hunkRanks);
-			return;
+		if (orderedParts.length > 0 && currentPartIndex > orderedParts.length - 1) {
+			resetPartTransition();
+			currentPartIndex = orderedParts.length - 1;
 		}
-		if (hunkRanks.length > 0 && reviewLevelOptions.length > 0 && !reviewLevelOptions.some((option) => option.level === Number(reviewLevel))) reviewLevel = reviewLevelOptions[0]!.level;
+	});
+
+	$effect(() => {
+		if (!strategies.includes(strategy)) strategy = 'flat';
+		if (sortOrder === 'causality' && !canCausality) sortOrder = 'tree';
 	});
 
 	$effect(() => {
@@ -151,9 +179,19 @@
 	});
 
 	$effect(() => {
-		if (hasAgentReview && session?.preReview.summary && summaryOpenedForSession !== session.id) {
-			summaryOpenedForSession = session.id;
-			summaryDialog = true;
+		if (hasAgentReview && session?.preReview.overview && overviewOpenedForSession !== session.id) {
+			overviewOpenedForSession = session.id;
+			overviewDialog = true;
+		}
+	});
+
+	$effect(() => {
+		if (hasAgentReview && session && session.preReview.smart && smartAutoSwitched !== session.id) {
+			smartAutoSwitched = session.id;
+			strategy = 'smart';
+			resetPartTransition();
+			currentPartIndex = 0;
+			if (causalityAvailable(session)) sortOrder = 'causality';
 		}
 	});
 
@@ -221,10 +259,18 @@
 		agentModelKey = stored.modelKey && nextSession.agentReview.models.some((model) => model.key === stored.modelKey) ? stored.modelKey : nextSession.agentReview.defaultModelKey ?? nextSession.agentReview.models[0]?.key ?? '';
 		agentThinkingLevel = stored.thinkingLevel ?? nextSession.agentReview.defaultThinkingLevel;
 		suggestComments = stored.suggestComments ?? true;
-		autoReview = stored.autoReview ?? false;
-		autoReviewArmed = autoReview;
-		reviewLevel = lowestReviewLevel(nextSession.preReview.hunks);
-		isolatedLevel = stored.isolatedLevel ?? true;
+		autorunSettings = stored.autorun;
+		autorunEnabled = stored.autorun?.enabled ?? false;
+		autoReviewArmed = autorunEnabled;
+		const available = availableStrategies(nextSession);
+		const defaultStrategy: ReviewStrategy = nextSession.commits?.length ? 'commits' : 'flat';
+		strategy = stored.strategy && available.includes(stored.strategy) ? stored.strategy : defaultStrategy;
+		sortOrder = stored.sortOrder && (stored.sortOrder === 'tree' || causalityAvailable(nextSession)) ? stored.sortOrder : 'tree';
+		cueEnabled = stored.cueEnabled ?? true;
+		isolatedPart = stored.isolatedPart ?? false;
+		autoAdvance = stored.autoAdvance ?? false;
+		resetPartTransition();
+		currentPartIndex = 0;
 		diffStyle = stored.diffStyle ?? 'split';
 		wrap = stored.wrap ?? false;
 		agentDefaultsSessionId = nextSession.id;
@@ -251,7 +297,7 @@
 		diffSourceSessionId = nextSession.id;
 		worktreeCwd = nextSession.cwd;
 		diffSourceMode = nextSession.diffMode ?? 'uncommitted';
-		diffSourceBase = nextSession.diffBase ?? branchRefs[0] ?? 'origin/main';
+		diffSourceBase = nextSession.diffBase ?? preferredBranchBase;
 		diffSourceError = undefined;
 	}
 
@@ -261,7 +307,7 @@
 			if (!response.ok) return;
 			if (id !== reviewId || signal?.aborted) return;
 			branchRefs = ((await response.json()) as { refs: string[] }).refs;
-			if (!diffSourceBase && branchRefs[0]) diffSourceBase = branchRefs[0];
+			if (!diffSourceBase || (diffSourceBase === 'origin/main' && !branchRefs.includes(diffSourceBase))) diffSourceBase = selectPreferredBranchBase(branchRefs, selectedWorktree?.branch);
 		} catch {
 			if (!signal?.aborted) branchRefs = [];
 		}
@@ -282,11 +328,11 @@
 	function restoreReviewed(id: string) {
 		restoredSessionId = id;
 		try {
-			const stored = localStorage.getItem(`pi-pair-review:${id}:reviewed`);
+			const stored = localStorage.getItem(`story-review:${id}:reviewed`);
 			reviewed.clear();
-			const parsed = stored ? JSON.parse(stored) as StoredReviewed | string[] : undefined;
-			const entries = Array.isArray(parsed) ? parsed : parsed?.version === 2 ? parsed.entries : [];
-			for (const entry of entries) if (isReviewedKey(entry)) reviewed.add(entry);
+			const parsed = stored ? JSON.parse(stored) as StoredReviewed | { version?: number; entries?: unknown } : undefined;
+			const entries = parsed && typeof parsed === 'object' && parsed.version === 3 && Array.isArray(parsed.entries) ? parsed.entries : [];
+			for (const entry of entries) if (typeof entry === 'string') reviewed.add(entry);
 		} catch {
 			reviewed.clear();
 		}
@@ -294,23 +340,32 @@
 
 	function toggleReviewed(file: string) {
 		const activeBeforeToggle = currentFileForAction();
-		const levels = reviewedLevelsForFile(file);
-		const isReviewed = levels.length > 0 && levels.every((level) => reviewed.has(reviewedKey(file, level)));
-		setFilesReviewed([file], !isReviewed);
-		if (!isReviewed && file === activeBeforeToggle) advanceAfterReviewed(file);
+		const hunkIds = hunkIdsForFile(file);
+		const isReviewed = hunkIds.length > 0 && hunkIds.every((id) => reviewed.has(id));
+		const advancedPart = setHunksReviewed(hunkIds, !isReviewed);
+		if (!advancedPart && !isReviewed && file === activeBeforeToggle) advanceAfterReviewed(file);
 	}
 
 	function setFilesReviewed(targetFiles: string[], nextReviewed: boolean) {
+		setHunksReviewed(targetFiles.flatMap((file) => hunkIdsForFile(file)), nextReviewed);
+	}
+
+	function setHunksReviewed(hunkIds: string[], nextReviewed: boolean) {
 		const wasComplete = reviewScopeComplete;
-		for (const file of targetFiles) {
-			for (const level of reviewedLevelsForFile(file)) {
-				const key = reviewedKey(file, level);
-				if (nextReviewed) reviewed.add(key);
-				else reviewed.delete(key);
-			}
+		const wasCurrentPartComplete = isCurrentPartComplete();
+		let advancedPart = false;
+		for (const id of hunkIds) {
+			if (nextReviewed) reviewed.add(id);
+			else reviewed.delete(id);
 		}
-		if (!wasComplete && allReviewUnits().every((unit) => reviewed.has(reviewedKey(unit.file, unit.level)))) celebrateCompletion();
+		const isComplete = hunks.length > 0 && hunks.every((hunk) => reviewed.has(hunk.id));
+		if (!wasComplete && isComplete) celebrateCompletion();
+		else if (autoAdvance && hasNextPart && !wasCurrentPartComplete && isCurrentPartComplete()) {
+			stepPart(1);
+			advancedPart = true;
+		}
 		persistReviewed();
+		return advancedPart;
 	}
 
 	async function advanceAfterReviewed(file: string) {
@@ -326,75 +381,37 @@
 
 	function persistReviewed() {
 		if (!session) return;
-		localStorage.setItem(`pi-pair-review:${session.id}:reviewed`, JSON.stringify({ version: 2, entries: [...reviewed] } satisfies StoredReviewed));
+		localStorage.setItem(`story-review:${session.id}:reviewed`, JSON.stringify({ version: 3, entries: [...reviewed] } satisfies StoredReviewed));
 	}
 
-	function allReviewUnits() {
-		if (hunkRanks.length === 0) return files.map((file) => ({ file: file.path, level: 1 as ReviewAttentionLevel }));
-		const units: { file: string; level: ReviewAttentionLevel }[] = [];
-		for (const rank of hunkRanks) {
-			const file = canonicalFileForRank(rank.file);
-			if (!file || units.some((unit) => unit.file === file && unit.level === rank.attentionLevel)) continue;
-			units.push({ file, level: rank.attentionLevel });
-		}
-		for (const file of files) {
-			if (!isUnrankedImageFile(file.path)) continue;
-			const level = unrankedImageReviewLevel();
-			if (!units.some((unit) => unit.file === file.path && unit.level === level)) units.push({ file: file.path, level });
-		}
-		return units;
+	function hunkIdsForFile(file: string) {
+		const summary = files.find((item) => item.path === file || item.previousPath === file);
+		const matches = (candidate: string) => candidate === file || (summary && (candidate === summary.path || candidate === summary.previousPath));
+		const ids = visibleChunks.filter((chunk) => matches(chunk.file)).flatMap((chunk) => chunk.hunkIds);
+		return [...new Set(ids)];
 	}
 
-	function canonicalFileForRank(file: string) {
-		return files.find((item) => item.path === file || item.previousPath === file)?.path;
+	function hunkIdsForPart(partId: string | undefined) {
+		if (!partId) return [];
+		return [...new Set(partition.chunks.filter((chunk) => chunk.partId === partId).flatMap((chunk) => chunk.hunkIds))];
+	}
+
+	function isCurrentPartComplete() {
+		const ids = hunkIdsForPart(currentPart?.id);
+		return ids.length > 0 && ids.every((id) => reviewed.has(id));
 	}
 
 	function isFileReviewed(file: string) {
-		const levels = reviewedLevelsForFile(file);
-		return levels.length > 0 && levels.every((level) => reviewed.has(reviewedKey(file, level)));
-	}
-
-	function reviewedLevelsForFile(file: string) {
-		if (hunkRanks.length === 0) return [1 as ReviewAttentionLevel];
-		const previousPath = files.find((item) => item.path === file)?.previousPath;
-		const levels: ReviewAttentionLevel[] = [];
-		for (const rank of hunkRanks) {
-			if (rank.file !== file && rank.file !== previousPath) continue;
-			if (isolatedLevel ? rank.attentionLevel !== Number(reviewLevel) : rank.attentionLevel > Number(reviewLevel)) continue;
-			if (!levels.includes(rank.attentionLevel)) levels.push(rank.attentionLevel);
-		}
-		if (levels.length === 0 && isUnrankedImageFile(file)) levels.push(unrankedImageReviewLevel());
-		return levels.sort((left, right) => left - right);
+		const hunkIds = hunkIdsForFile(file);
+		return hunkIds.length > 0 && hunkIds.every((id) => reviewed.has(id));
 	}
 
 	function fileReviewUnitMap() {
-		return new Map(files.map((file) => {
-			const levels = reviewedLevelsForFile(file.path);
-			const done = levels.filter((level) => reviewed.has(reviewedKey(file.path, level))).length;
-			return [file.path, { reviewed: done, total: levels.length }] as const;
+		return new Map(visibleFiles.map((file) => {
+			const hunkIds = hunkIdsForFile(file.path);
+			const done = hunkIds.filter((id) => reviewed.has(id)).length;
+			return [file.path, { reviewed: done, total: hunkIds.length }] as const;
 		}));
-	}
-
-	function isUnrankedImageFile(file: string) {
-		const summary = files.find((item) => item.path === file || item.previousPath === file);
-		if (!summary || (!isReviewableImagePath(summary.path) && !isReviewableImagePath(summary.previousPath))) return false;
-		return !hunkRanks.some((rank) => rank.file === summary.path || rank.file === summary.previousPath);
-	}
-
-	function unrankedImageReviewLevel() {
-		return lowestReviewLevel(hunkRanks) as ReviewAttentionLevel;
-	}
-
-	function reviewedKey(file: string, level: ReviewAttentionLevel) {
-		return `${level}\t${file}`;
-	}
-
-	function isReviewedKey(value: unknown): value is string {
-		return typeof value === 'string' && /^[1-5]\t/.test(value);
-	}
-
-	function lowestReviewLevel(ranks: { attentionLevel: ReviewAttentionLevel }[]) {
-		return ranks.length > 0 ? Math.min(...ranks.map((rank) => rank.attentionLevel)) : 1;
 	}
 
 	function repositoryLabel(cwd: string) {
@@ -409,10 +426,43 @@
 		return worktree.branch ? `${name} · ${worktree.branch}` : name;
 	}
 
+	function selectPreferredBranchBase(refs: string[], currentBranch?: string) {
+		const preferredRefs = currentBranch === 'master'
+			? ['origin/master', 'upstream/master', 'master', 'origin/main', 'upstream/main', 'main']
+			: ['origin/main', 'upstream/main', 'main', 'origin/master', 'upstream/master', 'master'];
+		return preferredRefs.find((ref) => refs.includes(ref)) ?? refs.find((ref) => ref !== currentBranch) ?? refs[0] ?? 'origin/main';
+	}
+
 	function celebrateCompletion() {
 		celebrateReviewComplete = true;
 		completionDialog = true;
 		setTimeout(() => (celebrateReviewComplete = false), 2200);
+	}
+
+	function stepPart(direction: 1 | -1) {
+		if (orderedParts.length <= 1) return;
+		const next = Math.min(orderedParts.length - 1, Math.max(0, safePartIndex + direction));
+		if (next === safePartIndex) return;
+		startPartTransition(direction);
+		currentPartIndex = next;
+		selectedFile = undefined;
+	}
+
+	function startPartTransition(direction: 1 | -1) {
+		partTransitionDirection = direction;
+		animatePartTransition = true;
+		if (partTransitionTimer !== undefined) clearTimeout(partTransitionTimer);
+		partTransitionTimer = setTimeout(() => {
+			animatePartTransition = false;
+			partTransitionTimer = undefined;
+		}, 220);
+	}
+
+	function resetPartTransition() {
+		animatePartTransition = false;
+		if (partTransitionTimer === undefined) return;
+		clearTimeout(partTransitionTimer);
+		partTransitionTimer = undefined;
 	}
 
 	async function saveComment() {
@@ -480,7 +530,7 @@
 
 	function handleDiffModeChange(event: Event) {
 		diffSourceMode = (event.currentTarget as HTMLSelectElement).value as ReviewDiffMode;
-		if (diffSourceMode === 'branch' && (!diffSourceBase || diffSourceBase === session?.diffBase)) diffSourceBase = session?.diffBase ?? branchRefs[0] ?? 'origin/main';
+		if (diffSourceMode === 'branch' && (!diffSourceBase || diffSourceBase === selectedWorktree?.branch || diffSourceBase === session?.diffBase)) diffSourceBase = session?.diffBase && session.diffBase !== selectedWorktree?.branch ? session.diffBase : preferredBranchBase;
 		void changeDiffSource();
 	}
 
@@ -490,7 +540,9 @@
 	}
 
 	function handleWorktreeChange(event: Event) {
+		const previousBranch = selectedWorktree?.branch;
 		worktreeCwd = (event.currentTarget as HTMLSelectElement).value;
+		if (diffSourceMode === 'branch' && (!diffSourceBase || diffSourceBase === previousBranch || diffSourceBase === selectedWorktree?.branch)) diffSourceBase = preferredBranchBase;
 		void changeDiffSource(worktreeCwd);
 	}
 
@@ -517,11 +569,15 @@
 			worktreeCwd = session.cwd;
 			void loadBranchRefs(reviewId);
 			void loadWorktrees(reviewId);
-			reviewLevel = lowestReviewLevel(session.preReview.hunks);
-			reviewLevelResetKey = '';
+			const defaultStrategy: ReviewStrategy = session.commits?.length ? 'commits' : 'flat';
+			strategy = availableStrategies(session).includes(defaultStrategy) ? defaultStrategy : 'flat';
+			sortOrder = 'tree';
+			resetPartTransition();
+			currentPartIndex = 0;
+			smartAutoSwitched = undefined;
 			selectedFile = undefined;
 			reviewed.clear();
-			localStorage.removeItem(`pi-pair-review:${reviewId}:reviewed`);
+			localStorage.removeItem(`story-review:${reviewId}:reviewed`);
 		} catch (changeError) {
 			diffSourceError = changeError instanceof Error ? changeError.message : String(changeError);
 			worktreeCwd = session.cwd;
@@ -589,12 +645,13 @@
 
 	function handleShortcut(event: KeyboardEvent) {
 		const target = event.target as HTMLElement | null;
-		const inEditor = target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT' || target?.tagName === 'SELECT';
-		if (event.key === 'Escape' && (commentDraft || modelDialog || summaryDialog || shortcutsDialog || completionDialog)) {
+		const inputType = target instanceof HTMLInputElement ? target.type : undefined;
+		const inEditor = target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT' || (target?.tagName === 'INPUT' && inputType !== 'checkbox' && inputType !== 'radio');
+		if (event.key === 'Escape' && (commentDraft || modelDialog || overviewDialog || shortcutsDialog || completionDialog)) {
 			event.preventDefault();
 			commentDraft = undefined;
 			modelDialog = false;
-			summaryDialog = false;
+			overviewDialog = false;
 			shortcutsDialog = false;
 			completionDialog = false;
 			return;
@@ -609,7 +666,12 @@
 			void saveComment();
 			return;
 		}
-		if (commentDraft || modelDialog || summaryDialog || shortcutsDialog || inEditor) return;
+		if (commentDraft || modelDialog || overviewDialog || shortcutsDialog || inEditor) return;
+		if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'a') {
+			event.preventDefault();
+			autoAdvance = !autoAdvance;
+			return;
+		}
 		if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c') {
 			event.preventDefault();
 			void copyFeedback();
@@ -695,22 +757,22 @@
 		}
 		if (event.key === '+' || event.key === '=' || event.key === 'ArrowRight') {
 			event.preventDefault();
-			stepReviewLevel(1);
+			stepPart(1);
 			return;
 		}
 		if (event.key === '-' || event.key === 'ArrowLeft') {
 			event.preventDefault();
-			stepReviewLevel(-1);
+			stepPart(-1);
 			return;
 		}
 		if (event.key.toLowerCase() === 'i') {
 			event.preventDefault();
-			isolatedLevel = !isolatedLevel;
+			isolatedPart = !isolatedPart;
 			return;
 		}
 		if (event.key.toLowerCase() === 's') {
 			event.preventDefault();
-			if (hasAgentReview && session?.preReview.summary) summaryDialog = true;
+			if (hasAgentReview && session?.preReview.overview) overviewDialog = true;
 			return;
 		}
 		if (event.key === '?') {
@@ -794,17 +856,11 @@
 		return `severity-${finding.severity}`;
 	}
 
-	function stepReviewLevel(direction: 1 | -1) {
-		const options = reviewLevelOptions.length > 0 ? reviewLevelOptions.map((option) => option.level) : [1, 2, 3, 4, 5];
-		const index = Math.max(0, options.indexOf(Number(reviewLevel) as ReviewAttentionLevel));
-		reviewLevel = options[Math.min(options.length - 1, Math.max(0, index + direction))] ?? reviewLevel;
-	}
-
 	function currentFileForAction() {
 		return selectedFile ?? diffViewer?.currentFile() ?? activeFile;
 	}
 
-	function renderMarkdown(markdown: string, fallback = 'No summary available.') {
+	function renderMarkdown(markdown: string, fallback = 'No description available.') {
 		return renderReviewMarkdown(markdown, reviewId ?? '', fallback);
 	}
 
@@ -832,16 +888,17 @@
 {:else}
 	<div class="grid min-h-screen grid-cols-1 grid-rows-[auto_1fr] {gridColumnsClass}">
 		<header class="sticky top-0 z-40 col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-1.5 border-b border-border bg-bg/95 px-2 backdrop-blur-sm" style="min-height: var(--topbar-height)">
-			<button class="h-8 w-8 p-0" title="Toggle files sidebar (B)" aria-label="Toggle files sidebar" onclick={() => (leftOpen = !leftOpen)}>{#if leftOpen}<PanelLeftClose size={15} />{:else}<PanelLeftOpen size={15} />{/if}</button>
+			<Button size="icon-md" title="Toggle files sidebar (B)" aria-label="Toggle files sidebar" onclick={() => (leftOpen = !leftOpen)}>{#if leftOpen}<PanelLeftClose size={15} />{:else}<PanelLeftOpen size={15} />{/if}</Button>
 			<h1 class="min-w-0 truncate text-[0.95rem] font-semibold" title={session.cwd}>{repositoryLabel(session.cwd)}</h1>
 			<div class="flex min-w-0 items-center justify-end gap-1">
-				<label class="hidden items-center gap-1 text-sm text-muted md:flex">View <select class="max-w-28" bind:value={diffStyle}><option value="split">Split</option><option value="unified">Unified</option></select></label>
-				<label class="hidden items-center gap-1 text-sm text-muted lg:flex"><input type="checkbox" bind:checked={wrap} /> Wrap</label>
-				<button title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onclick={() => (shortcutsDialog = true)}><HelpCircle size={15} /></button>
-				<button title="Copy feedback" onclick={copyFeedback}><Clipboard size={15} /><span class="hidden sm:inline">{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</span></button>
-				<button class="feedback-progress {reviewScopeComplete ? 'review-complete' : ''}" class:review-progress-complete={celebrateReviewComplete} title={`Insert feedback (${reviewProgress}% reviewed, W or Cmd/Ctrl+Enter)`} onclick={() => finish()}><CircularCheckProgress progress={reviewProgress} /><span class="hidden sm:inline">Insert feedback</span></button>
+				<div class="hidden items-center gap-0.5 md:flex" role="group" aria-label="Diff view options">
+					<Button size="md" class={diffStyle === 'split' ? 'view-toggle-active' : 'view-toggle-inactive'} title="Toggle split view" aria-label="Toggle split view" aria-pressed={diffStyle === 'split'} onclick={() => (diffStyle = diffStyle === 'split' ? 'unified' : 'split')}><SquareSplitHorizontal size={15} /><span class="hidden xl:inline">Split</span></Button>
+					<Button size="md" class={wrap ? 'view-toggle-active' : 'view-toggle-inactive'} title="Toggle line wrapping" aria-label="Toggle line wrapping" aria-pressed={wrap} onclick={() => (wrap = !wrap)}><TextWrap size={15} /><span class="hidden xl:inline">Wrap</span></Button>
+				</div>
+				<Button size="md" title="Copy feedback" onclick={copyFeedback}><Clipboard size={15} /><span class="hidden sm:inline">{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</span></Button>
+				<Button size="md" class="feedback-progress {reviewScopeComplete ? 'review-complete' : ''} {celebrateReviewComplete ? 'review-progress-complete' : ''}" title={`Insert feedback (${reviewProgress}% reviewed, W or Cmd/Ctrl+Enter)`} onclick={() => finish()}><CircularCheckProgress progress={reviewProgress} size={18} iconSize={13} /><span class="hidden sm:inline">Insert feedback</span></Button>
 			</div>
-			<button class="h-8 w-8 p-0" title="Toggle comments sidebar (Shift+B)" aria-label="Toggle comments sidebar" onclick={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}</button>
+			<Button size="icon-md" title="Toggle comments sidebar (Shift+B)" aria-label="Toggle comments sidebar" onclick={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}</Button>
 		</header>
 
 		{#if leftOpen}
@@ -870,83 +927,108 @@
 			</section>
 			<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
 				<div class="flex items-center justify-between gap-1.5"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{reviewedFileCount}/{visibleFiles.length}</span></div>
-				<FileTreeViewer files={visibleFiles} {selectedFile} {activeFile} reviewed={reviewedFiles} progress={fileReviewProgress} progressUnits={fileReviewUnits} onSelect={(file) => (selectedFile = file)} onToggleReviewed={toggleReviewed} onSetReviewed={setFilesReviewed} />
+				<FileTreeViewer files={visibleFiles} chunks={visibleChunks} {selectedFile} {activeFile} reviewed={reviewedFiles} progress={fileReviewProgress} progressUnits={fileReviewUnits} onSelect={(file) => (selectedFile = file)} onToggleReviewed={toggleReviewed} onSetReviewed={setFilesReviewed} />
 			</section>
 		</aside>
 		{/if}
 
 		<main class="min-w-0 max-w-full p-0" style="scroll-padding-top: calc(var(--topbar-height) + 1rem)">
-			<DiffViewer bind:this={diffViewer} {session} {findings} {hunkRanks} {reviewLevel} {isolatedLevel} reviewed={reviewedFiles} reviewedKeys={reviewed} progress={fileReviewProgress} {selectedFile} {targetFindingId} {targetCommentId} {diffStyle} {wrap} onActiveChange={(detail) => { activeFile = detail.file; }} onComment={startLineComment} onCommentRange={startLineRangeComment} onFileComment={(file) => (commentDraft = { scope: 'file', file, body: '' })} onToggleReviewed={toggleReviewed} onEditComment={editComment} onDeleteComment={removeComment} />
+			{#key currentPartKey}
+				<div class="part-review-content {animatePartTransition ? 'part-slide-in' : ''}" style={`--part-slide-x: ${partTransitionDirection * 2.5}rem;`} onanimationend={resetPartTransition}>
+					{#if currentPart?.brief?.trim()}
+						<section class="grid min-w-0 gap-0.5 border border-border bg-surface p-[0.3125rem]">
+							<span class="text-[0.66rem] font-semibold uppercase text-muted">{currentPart.title}</span>
+							<div class="rendered-markdown text-sm">{@html renderMarkdown(currentPart.brief)}</div>
+						</section>
+					{/if}
+					{#snippet diffFooter()}
+						{#if hasNextPart}
+							<section class="grid justify-items-center gap-1 px-2 py-2 text-sm text-muted">
+								{#if !autoAdvance}
+									<button class="border-accent px-2 py-1.5 text-fg disabled:border-border disabled:text-muted" title={`Continue to next part: ${nextPart?.title ?? ''}`} disabled={!currentPartComplete} onclick={() => stepPart(1)}><ChevronRight size={15} />Continue to next part<span class="hidden max-w-[28rem] truncate sm:inline">: {nextPart?.title}</span></button>
+								{/if}
+								<label class="flex items-center gap-1" title="Toggle Auto-advance (Ctrl+Shift+A)"><input type="checkbox" bind:checked={autoAdvance} /> Auto-advance</label>
+							</section>
+						{/if}
+					{/snippet}
+					<DiffViewer bind:this={diffViewer} {session} {findings} {hunks} chunks={visibleChunks} {visibleHunkIds} reviewedHunks={reviewed} {cueEnabled} {singlePartInView} reviewed={reviewedFiles} progress={fileReviewProgress} {selectedFile} {targetFindingId} {targetCommentId} {diffStyle} {wrap} footer={diffFooter} onActiveChange={(detail) => { activeFile = detail.file; }} onComment={startLineComment} onCommentRange={startLineRangeComment} onFileComment={(file) => (commentDraft = { scope: 'file', file, body: '' })} onToggleReviewed={toggleReviewed} onEditComment={editComment} onDeleteComment={removeComment} />
+				</div>
+			{/key}
 		</main>
 
 		{#if rightOpen}
-			<aside class="grid min-w-0 content-start gap-0 overflow-x-hidden border-t border-border bg-bg p-0 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-y-auto lg:border-t-0 lg:border-l">
+			<aside class="flex min-w-0 flex-col gap-0 overflow-x-hidden border-t border-border bg-bg p-0 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-y-auto lg:border-t-0 lg:border-l">
 				<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
 					<div class="flex items-center justify-between gap-1.5">
 						<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (aiOpen = !aiOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if aiOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}AI review</h2></button>
 						{#if hasAgentReview || session.preReview.status === 'running'}
-							<span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{hasAgentReview ? 'done' : 'running'}</span>
+							<span class="inline-flex items-center gap-[0.1875rem] bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{#if session.preReview.status === 'running'}<LoaderCircle class="animate-spin" size={11} />{/if}{hasAgentReview ? 'done' : 'running'}</span>
 						{:else}
 							<button class="px-1 py-[0.0625rem] text-xs" title="Run AI review" disabled={!agentModelKey} onclick={runAgentReview}><Play size={13} />Run</button>
 						{/if}
 					</div>
 					{#if aiOpen}
 						<div class="grid grid-cols-[minmax(0,1fr)_auto] gap-1">
-							<button title="AI review settings" onclick={() => (modelDialog = true)}>{#if session.preReview.status === 'running'}<LoaderCircle class="animate-spin" size={15} />{:else}<Settings size={15} />{/if}Model: {selectedAgentModel?.name ?? 'none'}</button>
-							{#if hasAgentReview && session.preReview.summary}<button class="w-9 px-0" title="Show summary (S)" aria-label="Show summary" onclick={() => (summaryDialog = true)}><BookOpenText size={15} /></button>{/if}
+							<button title="AI review settings" onclick={() => (modelDialog = true)}><Settings size={15} />Model: {selectedAgentModel?.name ?? 'none'}</button>
+							{#if hasAgentReview && session.preReview.overview}<button class="w-9 px-0" title="Show Overview (S)" aria-label="Show Overview" onclick={() => (overviewDialog = true)}><BookOpenText size={15} /></button>{/if}
 						</div>
-						{#if !hasAgentReview}<p class="text-sm text-muted">{session.preReview.status === 'idle' ? 'Run agent review from model settings.' : session.preReview.status === 'running' ? 'Ranking hunks…' : 'Agent review failed.'}</p>{/if}
+						{#if !hasAgentReview}<p class="text-sm text-muted">{session.preReview.status === 'idle' ? 'Run agent review from model settings.' : session.preReview.status === 'running' ? 'Reviewing changes…' : 'Agent review failed.'}</p>{/if}
+						{#if hasAgentReview && session.preReview.assessment}<div class="rendered-markdown border border-border bg-surface-2 p-1 text-sm text-muted">{@html renderMarkdown(session.preReview.assessment)}</div>{/if}
 						{#if session.agentReview.models.length === 0}<p class="text-sm text-muted">No authenticated models available.</p>{/if}
 						{#if session.preReview.error}<p class="text-sm text-muted">{session.preReview.error}</p>{/if}
 					{/if}
 				</section>
-				{#if hunkRanks.length > 0}
-					<section class="relative grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-1 {reviewModeOpen || reviewLevelOptions.length <= 1 ? '' : 'pb-4'}">
-						<div class="flex items-center justify-between gap-1.5">
-							<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (reviewModeOpen = !reviewModeOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if reviewModeOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}Review mode</h2><span class="truncate text-xs text-muted">{currentReviewMode.label}</span></button>
-						</div>
-						{#if !reviewModeOpen && reviewLevelOptions.length > 1}
-							<div class="absolute inset-x-1 bottom-1.5 flex gap-0.5" title="Review mode (+/-)">
-								{#each reviewLevelOptions as option (option.level)}
-									<button class="h-1.5 min-w-0 flex-1 border-0 p-0 {(isolatedLevel ? option.level === Number(reviewLevel) : option.level <= Number(reviewLevel)) ? 'bg-accent hover:bg-accent' : 'bg-surface-2 hover:bg-surface-hover'}" aria-label={`Review level ${option.level}`} onclick={() => (reviewLevel = option.level)}></button>
-								{/each}
+				<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
+					<div class="flex items-center justify-between gap-1.5">
+						<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (reviewModeOpen = !reviewModeOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if reviewModeOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}Review strategy</h2></button>
+					</div>
+					{#if multiPart}
+						<div class="flex items-center gap-1">
+							<button class="h-7 w-7 flex-none p-0" title="Previous part (−/←)" aria-label="Previous part" disabled={safePartIndex === 0} onclick={() => stepPart(-1)}><ChevronLeft size={15} /></button>
+							<div class="grid min-w-0 flex-1 gap-[0.0625rem] text-center">
+								<span class="truncate text-sm font-medium" title={currentPart?.title}>{currentPart?.title ?? ''}</span>
+								<span class="text-[0.66rem] uppercase text-muted">Part {safePartIndex + 1} of {orderedParts.length}</span>
 							</div>
-						{/if}
-						{#if reviewModeOpen}
-							{#if reviewLevelOptions.length <= 1}
-								<p class="border border-border bg-surface-2 p-1 text-sm text-muted"><strong class="text-fg">{currentReviewMode.label}</strong> · {currentReviewMode.description}</p>
-							{:else}
-								<div class="grid gap-[0.1875rem]">
-									{#each reviewLevelOptions as option (option.level)}
-										<label class="flex cursor-pointer items-start gap-1 border p-1 text-sm hover:bg-surface-hover {(isolatedLevel ? option.level === Number(reviewLevel) : option.level <= Number(reviewLevel)) ? 'border-accent bg-accent-soft' : 'border-border bg-surface-2'}">
-											<input class="mt-[0.1875rem] size-3.5 flex-none" type="radio" name="review-level" value={option.level} bind:group={reviewLevel} />
-											<span class="grid min-w-0 gap-[0.0625rem]"><span class="font-medium text-fg">{option.label} <span class="text-xs font-normal text-muted">({option.count})</span></span><span class="text-xs text-muted">{option.description}</span></span>
-										</label>
-									{/each}
-								</div>
-							{/if}
-							<label class="flex items-center gap-1 text-sm text-muted" title="Toggle isolated review mode (I)"><input type="checkbox" bind:checked={isolatedLevel} /> Isolate selected mode</label>
-						{/if}
-					</section>
-				{/if}
+							<button class="h-7 w-7 flex-none p-0" title="Next part (+/→)" aria-label="Next part" disabled={safePartIndex >= orderedParts.length - 1} onclick={() => stepPart(1)}><ChevronRight size={15} /></button>
+						</div>
+					{/if}
+					{#if reviewModeOpen}
+						<label class="grid gap-0.5 text-sm text-muted">Strategy
+							<select class="w-full" bind:value={strategy} onchange={() => { resetPartTransition(); currentPartIndex = 0; selectedFile = undefined; }}>
+								{#if strategies.includes('flat')}<option value="flat">Flat</option>{/if}
+								{#if strategies.includes('smart')}<option value="smart">Smart</option>{/if}
+								{#if strategies.includes('commits')}<option value="commits">Commits</option>{/if}
+							</select>
+						</label>
+						<label class="grid gap-0.5 text-sm text-muted">Sort order
+							<select class="w-full" bind:value={sortOrder}>
+								<option value="tree">Tree</option>
+								{#if canCausality}<option value="causality">Causality</option>{/if}
+							</select>
+						</label>
+						{#if multiPart}<label class="flex items-center gap-1 text-sm text-muted" title="Isolate current part (I)"><input type="checkbox" bind:checked={isolatedPart} /> Isolate current part</label>{/if}
+						<label class="flex items-center gap-1 text-sm text-muted" title="Show Cue notes"><input type="checkbox" bind:checked={cueEnabled} disabled={!canCausality && !session.preReview.smart} /> Show Cue notes</label>
+					{/if}
+				</section>
 				<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
 					<div class="flex items-center justify-between gap-1.5">
 						<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (agentCommentsOpen = !agentCommentsOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if agentCommentsOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}Agent comments</h2></button>
 						<span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{findings.length}</span>
 					</div>
 					{#if agentCommentsOpen}
-						{#if findings.length === 0}<p class="text-sm text-muted">No agent comments yet.</p>{:else}<div class="grid gap-1">{#each findings as finding (finding.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-1"><span class="{severityClass(finding)} px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase">L{finding.attentionLevel} · {finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove finding" onclick={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><div class="rendered-markdown text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
+						{#if findings.length === 0}<p class="text-sm text-muted">No agent comments yet.</p>{:else}<div class="grid gap-1">{#each findings as finding (finding.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-1"><span class="{severityClass(finding)} px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase">{finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove finding" onclick={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><div class="rendered-markdown text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
 					{/if}
 				</section>
 				<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
 					<div class="flex items-center justify-between gap-1.5">
 						<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (userCommentsOpen = !userCommentsOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if userCommentsOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}User comments</h2></button>
-						<div class="flex flex-none items-center gap-1"><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{userComments.length}</span><button class="px-1 py-[0.0625rem] text-xs" title="Comment overall (O)" onclick={() => (commentDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={13} />comment</button></div>
+						<div class="flex flex-none items-center gap-1"><button class="px-1 py-[0.0625rem] text-xs" title="Comment overall (O)" onclick={() => (commentDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={13} />comment</button><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{userComments.length}</span></div>
 					</div>
 					{#if userCommentsOpen}
 						{#if userComments.length === 0}<p class="text-sm text-muted">Click line numbers, add file comments, or comment overall.</p>{:else}<div class="grid gap-1">{#each userComments as comment (comment.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === comment.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><span class="flex min-w-0 items-center gap-1"><small class="min-w-0 truncate text-muted">{comment.scope === 'global' ? 'Overall' : comment.scope === 'file' ? comment.file : `${comment.file}:${comment.line}`}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-surface-hover hover:text-fg" title="Edit" aria-label="Edit comment" onclick={() => editComment(comment)}><Edit3 size={14} /></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove comment" onclick={() => removeComment(comment)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><div class="rendered-markdown text-sm">{@html renderMarkdown(comment.body)}</div></button></div>{/each}</div>{/if}
 					{/if}
 				</section>
+				<div class="mt-auto flex justify-end p-[0.3125rem]"><Button size="icon-md" class="text-muted hover:text-fg" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onclick={() => (shortcutsDialog = true)}><HelpCircle size={15} /></Button></div>
 			</aside>
 		{/if}
 	</div>
@@ -971,18 +1053,18 @@
 				</select>
 			</label>
 			<label class="flex items-center gap-1 text-sm"><input type="checkbox" bind:checked={suggestComments} /> Suggest comments</label>
-			<label class="flex items-center gap-1 text-sm"><input type="checkbox" bind:checked={autoReview} /> Run automatically next time</label>
+			<label class="flex items-center gap-1 text-sm"><input type="checkbox" bind:checked={autorunEnabled} /> Autorun</label>
 			<div class="flex justify-end gap-1 pt-0.5"><button title="Close dialog (Esc)" type="button" onclick={() => { persistReviewSettings(); modelDialog = false; }}>Close</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Run AI review" type="button" disabled={!agentModelKey || session?.preReview.status === 'running'} onclick={runAgentReview}><Play size={15} />Run</button></div>
 		</div>
 	</div>
 {/if}
 
-{#if summaryDialog}
-	<div role="presentation" class="modal-backdrop fixed inset-0 z-40 grid place-items-center p-2" onclick={(event) => backdropClick(event, () => (summaryDialog = false))}>
-		<div role="dialog" aria-modal="true" aria-labelledby="summary-dialog-title" class="grid max-h-[min(70vh,42rem)] w-[min(40rem,calc(100vw-2rem))] gap-1.5 overflow-auto border border-border bg-surface p-2.5 shadow-[0_16px_48px_var(--shadow)]">
-			<h2 id="summary-dialog-title" class="text-[0.95rem] font-semibold">Agent summary</h2>
-			<div class="markdown-body text-sm">{@html renderMarkdown(session?.preReview.summary ?? '')}</div>
-			<div class="flex justify-end gap-1 pt-0.5"><button type="button" onclick={() => (summaryDialog = false)}>Close</button></div>
+{#if overviewDialog}
+	<div role="presentation" class="modal-backdrop fixed inset-0 z-40 grid place-items-center p-2" onclick={(event) => backdropClick(event, () => (overviewDialog = false))}>
+		<div role="dialog" aria-modal="true" aria-labelledby="overview-dialog-title" class="grid max-h-[min(70vh,42rem)] w-[min(40rem,calc(100vw-2rem))] gap-1.5 overflow-auto border border-border bg-surface p-2.5 shadow-[0_16px_48px_var(--shadow)]">
+			<h2 id="overview-dialog-title" class="text-[0.95rem] font-semibold">Overview</h2>
+			<div class="markdown-body text-sm">{@html renderMarkdown(session?.preReview.overview ?? '')}</div>
+			<div class="flex justify-end gap-1 pt-0.5"><button type="button" onclick={() => (overviewDialog = false)}>Close</button></div>
 		</div>
 	</div>
 {/if}
@@ -1015,9 +1097,10 @@
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">F</kbd><dd class="text-sm text-muted">Add file comment</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Opt+↓ / ↑</kbd><dd class="text-sm text-muted">Next / previous hunk</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">O</kbd><dd class="text-sm text-muted">Comment overall</dd></div>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">S</kbd><dd class="text-sm text-muted">Show agent summary</dd></div>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">I</kbd><dd class="text-sm text-muted">Toggle isolated review mode</dd></div>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">+ / −</kbd><dd class="text-sm text-muted">Change review mode</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">S</kbd><dd class="text-sm text-muted">Show Overview</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">I</kbd><dd class="text-sm text-muted">Isolate current part</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">+ / −</kbd><dd class="text-sm text-muted">Next / previous part</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Ctrl+Shift+A</kbd><dd class="text-sm text-muted">Toggle Auto-advance</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">B</kbd><dd class="text-sm text-muted">Toggle files sidebar</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Shift+B</kbd><dd class="text-sm text-muted">Toggle comments sidebar</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">W</kbd><dd class="text-sm text-muted">Insert feedback</dd></div>
@@ -1047,3 +1130,30 @@
 		</div>
 	</div>
 {/if}
+
+<style>
+	.part-review-content {
+		min-width: 0;
+	}
+
+	.part-slide-in {
+		animation: part-slide-fade-in 180ms ease-out;
+	}
+
+	@keyframes part-slide-fade-in {
+		from {
+			opacity: 0;
+			transform: translateX(var(--part-slide-x));
+		}
+		to {
+			opacity: 1;
+			transform: translateX(0);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.part-slide-in {
+			animation: none;
+		}
+	}
+</style>

@@ -25,6 +25,10 @@
 	--accent-fg: #ffffff;
 	--accent-soft: rgba(91, 91, 214, 0.12);
 
+	--review: #16a34a;
+	--review-fg: #ffffff;
+	--review-soft: rgba(22, 163, 74, 0.14);
+
 	--danger: #dc2626;
 	--danger-soft: rgba(220, 38, 38, 0.12);
 
@@ -54,6 +58,10 @@
 		--accent: #8b8bf5;
 		--accent-fg: #0b0b12;
 		--accent-soft: rgba(139, 139, 245, 0.16);
+
+		--review: #4ade80;
+		--review-fg: #052e16;
+		--review-soft: rgba(74, 222, 128, 0.16);
 
 		--danger: #f87171;
 		--danger-soft: rgba(248, 113, 113, 0.15);
@@ -93,6 +101,10 @@
 	--color-accent-fg: var(--accent-fg);
 	--color-accent-soft: var(--accent-soft);
 
+	--color-review: var(--review);
+	--color-review-fg: var(--review-fg);
+	--color-review-soft: var(--review-soft);
+
 	--color-danger: var(--danger);
 	--color-danger-soft: var(--danger-soft);
 
@@ -113,7 +125,7 @@ body {
 }
 
 .feedback-progress {
-	--circular-check-progress-color: var(--accent);
+	--circular-check-progress-color: var(--review);
 	border-color: var(--border-strong);
 	transition:
 		background-color 0.15s ease,
@@ -123,18 +135,28 @@ body {
 }
 
 .feedback-progress.review-complete {
-	border-color: var(--accent);
-	background: var(--accent);
-	color: var(--accent-fg);
+	border-color: var(--review);
+	background: var(--review);
+	color: var(--review-fg);
 }
 
 .feedback-progress.review-complete:hover:not(:disabled) {
-	background: var(--accent);
+	background: var(--review);
 	opacity: 0.9;
 }
 
 .feedback-progress.review-complete {
-	--circular-check-progress-color: var(--accent-fg);
+	--circular-check-progress-color: var(--review-fg);
+}
+
+.view-toggle-active {
+	border-color: var(--border-strong) !important;
+	background: var(--surface-2) !important;
+	color: var(--fg) !important;
+}
+
+.view-toggle-inactive {
+	color: var(--muted) !important;
 }
 
 .review-progress-complete {
@@ -183,6 +205,9 @@ input[type='radio'] {
 	select {
 		max-width: 100%;
 		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	button:hover:not(:disabled),
@@ -282,8 +307,8 @@ input[type='radio'] {
 }
 .tree-badge {
 	padding: 0.025rem 0.2rem;
-	background: var(--accent-soft);
-	color: var(--accent);
+	background: var(--review-soft);
+	color: var(--review);
 	font-size: 0.66rem;
 	font-weight: 600;
 }
@@ -297,15 +322,15 @@ input[type='radio'] {
 	cursor: pointer;
 }
 .tree-reviewed-toggle.reviewed {
-	color: var(--accent);
+	color: var(--review);
 }
 .tree-reviewed-toggle:hover {
 	background: transparent;
-	color: var(--accent);
+	color: var(--review);
 }
 
 .tree-active-row {
-	background: var(--accent-soft) !important;
+	background: var(--review-soft) !important;
 }
 
 .diff-container {
@@ -313,6 +338,25 @@ input[type='radio'] {
 	min-width: 0;
 	max-width: 100%;
 	padding-left: 2px;
+}
+
+.diff-loading {
+	min-height: 12rem;
+}
+
+.diff-ready-content.diff-ready {
+	animation: diff-fade-slide-in 0.22s ease-out both;
+}
+
+@keyframes diff-fade-slide-in {
+	from {
+		opacity: 0;
+		transform: translateY(0.75rem);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
 }
 
 .rendered-file,

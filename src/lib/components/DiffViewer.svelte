@@ -1,13 +1,19 @@
 <script lang="ts">
 	import { onMount, tick } from 'svelte';
+	import type { Snippet } from 'svelte';
 	import { renderReviewMarkdown } from '$lib/client/review-markdown';
 	import { compareTreeOrder } from '$lib/client/review-ui';
+	import Button from './Button.svelte';
 	import CircularCheckProgress from './CircularCheckProgress.svelte';
 	import { isReviewableImagePath } from '$lib/shared/images';
 	import { SvelteSet } from 'svelte/reactivity';
-	import { ChevronDown, ChevronRight, MessageSquarePlus, Trash2 } from '@lucide/svelte';
+	import { ChevronDown, ChevronRight, LoaderCircle, MessageSquarePlus, Trash2 } from '@lucide/svelte';
 	import type { DiffLineAnnotation, FileContents, FileDiff as FileDiffInstance, FileDiffMetadata, SelectedLineRange } from '@pierre/diffs';
-	import type { ReviewAttentionLevel, ReviewFinding, ReviewHunkRank, ReviewSessionSnapshot, UserReviewComment } from '$lib/shared/review';
+	import type { ReviewChunk, ReviewFinding, ReviewHunk, ReviewSessionSnapshot, UserReviewComment } from '$lib/shared/review';
+
+	function hunkIdFor(file: string, oldStart: number, newStart: number) {
+		return `${file}:${oldStart}:${newStart}`;
+	}
 
 	type RenderComment =
 		| { kind: 'finding'; value: ReviewFinding }
@@ -17,38 +23,43 @@
 	let {
 		session,
 		findings = [],
-		hunkRanks = [],
-		reviewLevel = 1,
+		hunks = [],
+		chunks = [],
+		visibleHunkIds = new SvelteSet<string>(),
+		reviewedHunks = new SvelteSet<string>(),
+		cueEnabled = false,
+		singlePartInView = false,
 		selectedFile,
 		targetFindingId,
 		targetCommentId,
 		diffStyle = 'split',
 		wrap = false,
 		reviewed = new SvelteSet<string>(),
-		reviewedKeys = new SvelteSet<string>(),
 		progress = new Map<string, number>(),
-		isolatedLevel = false,
 		onComment,
 		onCommentRange,
 		onToggleReviewed,
 		onFileComment,
 		onEditComment,
 		onDeleteComment,
-		onActiveChange
+		onActiveChange,
+		footer
 	}: {
 		session: ReviewSessionSnapshot;
 		findings?: ReviewFinding[];
-		hunkRanks?: ReviewHunkRank[];
-		reviewLevel?: number;
+		hunks?: ReviewHunk[];
+		chunks?: ReviewChunk[];
+		visibleHunkIds?: Set<string>;
+		reviewedHunks?: Set<string>;
+		cueEnabled?: boolean;
+		singlePartInView?: boolean;
 		selectedFile?: string;
 		targetFindingId?: string;
 		targetCommentId?: string;
 		diffStyle?: 'split' | 'unified';
 		wrap?: boolean;
 		reviewed?: Set<string>;
-		reviewedKeys?: Set<string>;
 		progress?: ReadonlyMap<string, number>;
-		isolatedLevel?: boolean;
 		onComment?: (detail: { file: string; line: number; side: 'additions' | 'deletions' }) => void;
 		onCommentRange?: (file: string, range: SelectedLineRange | null) => void;
 		onToggleReviewed?: (file: string) => void;
@@ -56,11 +67,13 @@
 		onEditComment?: (comment: UserReviewComment) => void;
 		onDeleteComment?: (comment: UserReviewComment) => void;
 		onActiveChange?: (detail: { file?: string; commentId?: string }) => void;
+		footer?: Snippet;
 	} = $props();
 
 	let container: HTMLDivElement;
 	let mounted = $state(false);
 	let renderError = $state<string | undefined>();
+	let rendering = $state(true);
 	let renderSequence = 0;
 	let renderedFiles = $state.raw<FileDiffMetadata[]>([]);
 	let instances: FileDiffInstance<RenderComment>[] = [];
@@ -79,9 +92,11 @@
 
 	let effectiveDiffStyle = $derived(diffStyle === 'split' && containerWidth > 0 && containerWidth < 820 ? 'unified' : diffStyle);
 	let diffCommentKey = $derived(session.userComments.filter((comment) => comment.scope !== 'global').map((comment) => `${comment.id}:${comment.scope}:${comment.file ?? ''}:${comment.line ?? ''}:${comment.side ?? ''}:${comment.body}`).join(','));
-	let reviewedKeysKey = $derived([...reviewedKeys].sort().join(','));
-	let renderKey = $derived(`${session.id}:${hashString(session.patch)}:${findings.map((finding) => `${finding.id}:${finding.file ?? ''}:${finding.line ?? ''}:${finding.side ?? ''}:${finding.title}:${finding.rationale}:${finding.recommendation ?? ''}`).join(',')}:${diffCommentKey}:${selectedFile ?? '*'}:${reviewLevel}:${isolatedLevel}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.file}:${hunk.oldStart}:${hunk.oldLines}:${hunk.newStart}:${hunk.newLines}:${hunk.attentionLevel}`).join(',')}:${effectiveDiffStyle}:${wrap}`);
-	let hunkFilterKey = $derived(`${reviewLevel}:${isolatedLevel}:${reviewedKeysKey}:${hunkRanks.map((hunk) => `${hunk.id}:${hunk.attentionLevel}`).join(',')}:${selectedFile ?? '*'}`);
+	let visibleHunkIdsKey = $derived([...visibleHunkIds].sort().join(','));
+	let reviewedHunksKey = $derived([...reviewedHunks].sort().join(','));
+	let cueKey = $derived(`${cueEnabled}:${singlePartInView}:${chunks.map((chunk) => `${chunk.id}:${chunk.cue ?? ''}`).join('|')}`);
+	let renderKey = $derived(`${session.id}:${hashString(session.patch)}:${findings.map((finding) => `${finding.id}:${finding.file ?? ''}:${finding.line ?? ''}:${finding.side ?? ''}:${finding.title}:${finding.rationale}:${finding.recommendation ?? ''}`).join(',')}:${diffCommentKey}:${selectedFile ?? '*'}:${visibleHunkIdsKey}:${cueKey}:${effectiveDiffStyle}:${wrap}`);
+	let hunkFilterKey = $derived(`${visibleHunkIdsKey}:${reviewedHunksKey}:${selectedFile ?? '*'}`);
 
 	$effect(() => {
 		if (mounted && renderKey) void renderDiffs();
@@ -127,6 +142,8 @@
 		if (!container) return;
 		const sequence = ++renderSequence;
 		cleanup();
+		renderedFiles = [];
+		rendering = true;
 		renderError = undefined;
 
 		try {
@@ -134,7 +151,13 @@
 			if (sequence !== renderSequence) return;
 
 			const currentSession = session;
-			const nextRenderedFiles = (await parseRenderedFiles(filteredPatch(), currentSession, true)).sort((left, right) => compareTreeOrder(left.name, right.name));
+			const fileOrder = new Map<string, number>();
+			for (const chunk of chunks) if (!fileOrder.has(chunk.file)) fileOrder.set(chunk.file, fileOrder.size);
+			const orderOf = (name: string) => (fileOrder.has(name) ? fileOrder.get(name)! : Number.MAX_SAFE_INTEGER);
+			const nextRenderedFiles = (await parseRenderedFiles(filteredPatch(), currentSession, true)).sort((left, right) => {
+				const delta = orderOf(left.name) - orderOf(right.name);
+				return delta !== 0 ? delta : compareTreeOrder(left.name, right.name);
+			});
 			if (sequence !== renderSequence) return;
 			renderedFiles = nextRenderedFiles;
 			await tick();
@@ -184,6 +207,8 @@
 			updateActiveFromScroll();
 		} catch (error) {
 			renderError = error instanceof Error ? error.message : String(error);
+		} finally {
+			if (sequence === renderSequence) rendering = false;
 		}
 	}
 
@@ -355,6 +380,12 @@
 		};
 	}
 
+	function cueFor(file: FileDiffMetadata): string | undefined {
+		if (!cueEnabled || !singlePartInView) return undefined;
+		const chunk = chunks.find((candidate) => candidate.file === file.name || candidate.file === file.prevName);
+		return chunk?.cue?.trim() || undefined;
+	}
+
 	function fileChangeLabel(type: FileDiffMetadata['type']) {
 		return type === 'new' ? 'added' : type === 'deleted' ? 'deleted' : type === 'rename-pure' || type === 'rename-changed' ? 'renamed' : 'modified';
 	}
@@ -388,17 +419,13 @@
 			.review-reviewed-hunk:is([data-line-type=change-addition], [data-line-type=change-deletion]) {
 				--mix-light: 96%;
 				--mix-dark: 93%;
-				--diffs-bg-addition-emphasis: rgb(from var(--diffs-addition-base) r g b / 0.06);
-				--diffs-bg-deletion-emphasis: rgb(from var(--diffs-deletion-base) r g b / 0.07);
+				--diffs-bg-addition-emphasis: var(--review-soft);
+				--diffs-bg-deletion-emphasis: var(--review-soft);
 			}
 			.review-reviewed-hunk[data-column-number]::before {
 				opacity: 0.28;
 			}
 		`;
-	}
-
-	function reviewedKey(file: string, level: ReviewAttentionLevel) {
-		return `${level}\t${file}`;
 	}
 
 	function cleanup() {
@@ -432,27 +459,27 @@
 				element.classList.remove('review-reviewed-hunk');
 			}
 		}
-		if (hunkRanks.length === 0) return;
+		if (visibleHunkIds.size === 0 && hunks.length === 0) return;
 
 		for (const file of visibleFiles) {
 			const section = container.querySelector<HTMLElement>(`[data-file="${CSS.escape(file.name)}"]`);
 			const shadowRoot = section ? diffHost(section)?.shadowRoot : undefined;
 			if (!shadowRoot) continue;
-			const fileRanks = hunkRanks.filter((rank) => rank.file === file.name || rank.file === file.prevName);
-			if (fileRanks.length === 0) continue;
+			const fileHunks = hunks.filter((hunk) => hunk.file === file.name || hunk.file === file.prevName);
+			if (fileHunks.length === 0) continue;
 			const visible = new SvelteSet<number>();
 			const visibleHunkIndexes = new SvelteSet<number>();
 			const reviewedVisibleIndexes = new SvelteSet<number>();
 			for (const [hunkIndex, hunk] of file.hunks.entries()) {
-				const rank = hunkRankFor(file, hunk);
-				const level = rank?.attentionLevel ?? 5;
-				if (isolatedLevel ? level !== Number(reviewLevel) : level > Number(reviewLevel)) continue;
+				const reviewHunk = reviewHunkFor(file, hunk);
+				const hunkId = reviewHunk?.id;
+				if (!hunkId || !visibleHunkIds.has(hunkId)) continue;
 				visibleHunkIndexes.add(hunkIndex);
 				const start = effectiveDiffStyle === 'split' ? hunk.splitLineStart : hunk.unifiedLineStart;
 				const count = effectiveDiffStyle === 'split' ? hunk.splitLineCount : hunk.unifiedLineCount;
 				for (let index = start; index < start + count; index += 1) {
 					visible.add(index);
-					if (rank && reviewedKeys.has(reviewedKey(file.name, rank.attentionLevel))) reviewedVisibleIndexes.add(index);
+					if (reviewedHunks.has(hunkId)) reviewedVisibleIndexes.add(index);
 				}
 			}
 			for (const separator of shadowRoot.querySelectorAll<HTMLElement>('[data-separator][data-expand-index]')) {
@@ -535,13 +562,13 @@
 	}
 
 	function filteredPatch() {
-		if (hunkRanks.length === 0 && !selectedFile) return session.patch;
+		if (hunks.length === 0 && !selectedFile) return session.patch;
 		const selected = selectedFile ? new SvelteSet([selectedFile]) : undefined;
-		const visibleFiles = hunkRanks.length > 0
+		const visibleFiles = hunks.length > 0
 			? new SvelteSet(
-				hunkRanks
-					.filter((rank) => isolatedLevel ? rank.attentionLevel === Number(reviewLevel) : rank.attentionLevel <= Number(reviewLevel))
-					.map((rank) => rank.file)
+				hunks
+					.filter((hunk) => visibleHunkIds.has(hunk.id))
+					.map((hunk) => hunk.file)
 			)
 			: undefined;
 		const output: string[] = [];
@@ -555,12 +582,12 @@
 
 		const includeUnrankedImageFile = () => {
 			if (!isReviewableImagePath(currentFile) && !isReviewableImagePath(previousFile)) return false;
-			return !hunkRanks.some((rank) => rank.file === currentFile || rank.file === previousFile);
+			return !hunks.some((hunk) => hunk.file === currentFile || hunk.file === previousFile);
 		};
 		const shouldIncludeFile = () => {
 			const selectedMatch = !selected || selected.has(currentFile) || selected.has(previousFile);
-			const reviewLevelMatch = !visibleFiles || visibleFiles.has(currentFile) || visibleFiles.has(previousFile);
-			return (selectedMatch && reviewLevelMatch) || includeUnrankedImageFile();
+			const visibleMatch = !visibleFiles || visibleFiles.has(currentFile) || visibleFiles.has(previousFile);
+			return (selectedMatch && visibleMatch) || includeUnrankedImageFile();
 		};
 		const flushFileWithoutHunks = () => {
 			if (fileHasHunks || header.length === 0 || !includeCurrentFile || !includeUnrankedImageFile()) return;
@@ -630,14 +657,14 @@
 		return [...section.children].find((child): child is HTMLElement => child instanceof HTMLElement && !!child.shadowRoot);
 	}
 
-	function hunkRankFor(file: FileDiffMetadata, hunk: FileDiffMetadata['hunks'][number]): ReviewHunkRank | undefined {
-		return hunkRanks.find(
-			(rank) =>
-				(rank.file === file.name || rank.file === file.prevName) &&
-				rank.oldStart === hunk.deletionStart &&
-				rank.oldLines === hunk.deletionCount &&
-				rank.newStart === hunk.additionStart &&
-				rank.newLines === hunk.additionCount
+	function reviewHunkFor(file: FileDiffMetadata, hunk: FileDiffMetadata['hunks'][number]): ReviewHunk | undefined {
+		return hunks.find(
+			(reviewHunk) =>
+				(reviewHunk.file === file.name || reviewHunk.file === file.prevName) &&
+				reviewHunk.oldStart === hunk.deletionStart &&
+				reviewHunk.oldLines === hunk.deletionCount &&
+				reviewHunk.newStart === hunk.additionStart &&
+				reviewHunk.newLines === hunk.additionCount
 		);
 	}
 
@@ -755,10 +782,15 @@
 	<div class="mb-4 border border-danger/50 bg-danger-soft p-2 text-danger">Could not render diff: {renderError}</div>
 {/if}
 
-<div class="diff-container grid gap-1" style:padding-bottom={`${lastFileScrollPadding}px`} bind:this={container}>
+<div class="diff-container grid gap-1" class:diff-rendering={rendering} style:padding-bottom={`${lastFileScrollPadding}px`} bind:this={container}>
+	{#if rendering}
+		<div class="diff-loading grid place-items-center border border-border bg-surface p-8 text-sm text-muted"><span class="inline-flex items-center gap-1.5"><LoaderCircle class="animate-spin" size={15} />Loading diffs…</span></div>
+	{/if}
+	<div class="diff-ready-content" class:diff-ready={renderedFiles.length > 0 && !rendering}>
 	{#each renderedFiles as file (file.name)}
 		{@const collapsed = isFileCollapsed(file.name)}
 		{@const fileNotes = fileCommentsFor(file)}
+		{@const cue = cueFor(file)}
 		<section class="rendered-file mb-2 scroll-mt-[5.5rem] border border-border bg-surface" class:review-active-file={activeFile === file.name} data-file={file.name}>
 			<div class="file-review-header sticky top-[var(--topbar-height)] z-20 flex items-center justify-between gap-1.5 border-b border-border bg-surface px-1.5 py-1">
 				<button type="button" class="file-collapse-toggle min-w-0 flex-1 overflow-hidden justify-start border-0 bg-transparent p-0 text-left text-sm font-medium hover:bg-transparent" onclick={() => toggleFileCollapsed(file.name)}>
@@ -767,8 +799,8 @@
 				</button>
 				<span class="file-change-chip flex-none px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase {fileChangeClass(file.type)}">{fileChangeLabel(file.type)}</span>
 				<div class="flex flex-none items-center gap-1">
-					<button type="button" class="whitespace-nowrap text-xs" onclick={() => onFileComment?.(file.name)}><MessageSquarePlus size={14} /><span class="file-action-label">Comment file</span></button>
-					<button type="button" class="file-reviewed-toggle whitespace-nowrap text-xs{reviewed.has(file.name) ? ' border-accent text-accent' : ''}" title={`${progress.get(file.name) ?? 0}% reviewed`} onclick={() => onToggleReviewed?.(file.name)}><CircularCheckProgress progress={progress.get(file.name) ?? 0} size={18} iconSize={14} /><span class="file-action-label">reviewed</span></button>
+					<Button type="button" size="sm" class="whitespace-nowrap" onclick={() => onFileComment?.(file.name)}><MessageSquarePlus size={14} /><span class="file-action-label">Comment file</span></Button>
+					<Button type="button" size="sm" class="file-reviewed-toggle whitespace-nowrap{reviewed.has(file.name) ? ' border-review text-review' : ''}" style="--circular-check-progress-color: var(--review)" title={`${progress.get(file.name) ?? 0}% reviewed`} onclick={() => onToggleReviewed?.(file.name)}><CircularCheckProgress progress={progress.get(file.name) ?? 0} size={16} iconSize={12} /><span class="file-action-label">reviewed</span></Button>
 				</div>
 			</div>
 
@@ -781,6 +813,10 @@
 						</aside>
 					{/each}
 				</div>
+			{/if}
+
+			{#if cue && !collapsed}
+				<div class="review-cue border-b border-border px-1.5 py-1 text-xs italic text-muted">{@html renderMarkdown(cue)}</div>
 			{/if}
 
 			{#if isImageDiff(file)}
@@ -807,4 +843,8 @@
 			{/if}
 		</section>
 	{/each}
+	{#if footer && !rendering}
+		{@render footer()}
+	{/if}
+	</div>
 </div>
