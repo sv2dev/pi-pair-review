@@ -15,13 +15,16 @@
 	import type { SelectedLineRange } from '@pierre/diffs';
 	import type { ReviewChunk, ReviewDiffMode, ReviewDiffStyle, ReviewFinding, ReviewSessionSnapshot, ReviewSortOrder, ReviewStrategy, ReviewUiSettings, UserReviewComment } from '$lib/shared/review';
 
-	type CommentDraft = { id?: string; scope: 'global' | 'file' | 'line'; file?: string; line?: number; side?: 'additions' | 'deletions'; endLine?: number; endSide?: 'additions' | 'deletions'; body: string };
+	type CommentDraft = { id?: string; scope: 'global' | 'file' | 'line'; file?: string; line?: number; side?: 'additions' | 'deletions'; endLine?: number; endSide?: 'additions' | 'deletions'; body: string; attachments?: { label: string; src: string }[] };
+	type CommentAttachment = { id: number; label: string; src: string; raw?: string };
 	type MarkdownEditorApi = { insertText: (text: string) => void; focus: () => void };
 	type DiffViewerApi = { scrollFile: (direction: 1 | -1) => void; scrollFileAfter: (file: string) => void; scrollComment: (direction: 1 | -1) => void; scrollHunk: (direction: 1 | -1) => void; editActiveComment: () => boolean; currentFile: () => string | undefined };
 	type StoredReviewed = { version: 3; entries: string[] };
 	type ReviewWorktreeOption = { path: string; branch?: string; head?: string; current: boolean };
 
 	let session = $state.raw<ReviewSessionSnapshot | undefined>(undefined);
+	let userComments = $state.raw<UserReviewComment[]>([]);
+	let sessionRevisionKey = '';
 	let error = $state<string | undefined>();
 	let connectionWarning = $state<string | undefined>();
 	let selectedFile = $state<string | undefined>();
@@ -32,6 +35,8 @@
 	let leftOpen = $state(true);
 	let rightOpen = $state(true);
 	let commentDraft = $state<CommentDraft | undefined>();
+	let enlargedAttachment = $state<CommentAttachment | undefined>();
+	let commentAttachments = $derived(extractCommentAttachments(commentDraft?.body ?? ''));
 	let mdEditor = $state<MarkdownEditorApi | undefined>();
 	let closingNotesTextarea = $state<HTMLTextAreaElement | undefined>();
 	let diffViewer = $state<DiffViewerApi | undefined>();
@@ -119,7 +124,6 @@
 	let visibleHunkIds = $derived(new SvelteSet(visibleChunks.flatMap((chunk) => chunk.hunkIds)));
 	let visibleFileSet = $derived(new SvelteSet(visibleChunks.map((chunk) => chunk.file)));
 	let visibleFiles = $derived(sortFilesForTree(files.filter((file) => visibleFileSet.has(file.path) || (file.previousPath && visibleFileSet.has(file.previousPath)))));
-	let userComments = $derived(session?.userComments ?? []);
 	let reviewedFiles = $derived(new SvelteSet(visibleFiles.filter((file) => isFileReviewed(file.path)).map((file) => file.path)));
 	let reviewedFileCount = $derived(visibleFiles.filter((file) => reviewedFiles.has(file.path)).length);
 	let reviewProgress = $derived(hunks.length ? Math.round(([...reviewed].filter((id) => hunks.some((hunk) => hunk.id === id)).length / hunks.length) * 100) : 0);
@@ -229,7 +233,7 @@
 		events.addEventListener('snapshot', (event) => {
 			if (id !== reviewId) return;
 			connectionWarning = undefined;
-			session = JSON.parse((event as MessageEvent).data) as ReviewSessionSnapshot;
+			applySnapshot(JSON.parse((event as MessageEvent).data) as ReviewSessionSnapshot);
 		});
 		events.onerror = () => {
 			if (id === reviewId) connectionWarning = 'Live connection lost. EventSource will retry automatically.';
@@ -246,11 +250,43 @@
 			const response = await fetch(`/api/reviews/${id}`, { signal });
 			if (!response.ok) throw new Error(await response.text());
 			const nextSession = (await response.json()) as ReviewSessionSnapshot;
-			if (id === reviewId && !signal?.aborted) session = nextSession;
+			if (id === reviewId && !signal?.aborted) applySnapshot(nextSession, true);
 		} catch (loadError) {
 			if (signal?.aborted) return;
 			error = loadError instanceof Error ? loadError.message : String(loadError);
 		}
+	}
+
+	function applySnapshot(nextSession: ReviewSessionSnapshot, force = false) {
+		userComments = nextSession.userComments;
+		const nextRevisionKey = commentAgnosticSessionKey(nextSession);
+		if (!force && session && nextRevisionKey === sessionRevisionKey) return;
+		sessionRevisionKey = nextRevisionKey;
+		session = { ...nextSession, userComments: [] };
+	}
+
+	function commentAgnosticSessionKey(value: ReviewSessionSnapshot) {
+		return [
+			value.id,
+			value.cwd,
+			value.envPwd ?? '',
+			value.title,
+			value.baseDescription,
+			value.diffMode ?? '',
+			value.diffBase ?? '',
+			hashString(value.patch),
+			value.files.map((file) => `${file.path}:${file.previousPath ?? ''}:${file.changeType}:${file.additions}:${file.deletions}`).join('|'),
+			value.hunks.map((hunk) => `${hunk.id}:${hunk.file}:${hunk.oldStart}:${hunk.newStart}`).join('|'),
+			JSON.stringify(value.commits ?? []),
+			JSON.stringify(value.agentReview),
+			JSON.stringify(value.preReview)
+		].join('\n');
+	}
+
+	function hashString(value: string) {
+		let hash = 5381;
+		for (let index = 0; index < value.length; index += 1) hash = ((hash << 5) + hash) ^ value.charCodeAt(index);
+		return hash >>> 0;
 	}
 
 	async function restoreAgentDefaults(nextSession: ReviewSessionSnapshot) {
@@ -467,22 +503,22 @@
 
 	async function saveComment() {
 		if (!commentDraft?.body.trim()) return;
-		const draft = { ...commentDraft, body: commentDraft.body.trim() };
-		const previousSession = session;
+		const draft = normalizeCommentDraft({ ...commentDraft, body: commentDraft.body.trim() });
+		const previousComments = userComments;
 		commentDraft = undefined;
 		try {
 			if (draft.id) {
-				if (session) session = { ...session, userComments: session.userComments.map((item) => (item.id === draft.id ? { ...item, body: draft.body } : item)) };
-				const comment = await requestJson<UserReviewComment>(`/api/reviews/${reviewId}/comments/${draft.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body: draft.body }) });
-				if (session) session = { ...session, userComments: session.userComments.map((item) => (item.id === comment.id ? comment : item)) };
+				userComments = userComments.map((item) => (item.id === draft.id ? { ...item, body: draft.body, attachments: draft.attachments } : item));
+				const comment = await requestJson<UserReviewComment>(`/api/reviews/${reviewId}/comments/${draft.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body: draft.body, attachments: draft.attachments }) });
+				userComments = userComments.map((item) => (item.id === comment.id ? comment : item));
 				return;
 			}
 			const optimistic: UserReviewComment = { ...draft, id: `local-${crypto.randomUUID()}`, createdAt: new Date().toISOString() };
-			if (session) session = { ...session, userComments: [...session.userComments, optimistic] };
+			userComments = [...userComments, optimistic];
 			const comment = await requestJson<UserReviewComment>(`/api/reviews/${reviewId}/comments`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draft) });
-			if (session) session = { ...session, userComments: session.userComments.map((item) => (item.id === optimistic.id ? comment : item)) };
+			userComments = userComments.map((item) => (item.id === optimistic.id ? comment : item));
 		} catch (saveError) {
-			session = previousSession;
+			userComments = previousComments;
 			commentDraft = draft;
 			connectionWarning = saveError instanceof Error ? saveError.message : String(saveError);
 		}
@@ -500,12 +536,12 @@
 	}
 
 	async function removeComment(comment: UserReviewComment) {
-		const previousSession = session;
-		if (session) session = { ...session, userComments: session.userComments.filter((item) => item.id !== comment.id) };
+		const previousComments = userComments;
+		userComments = userComments.filter((item) => item.id !== comment.id);
 		try {
 			await requestOk(`/api/reviews/${reviewId}/comments/${comment.id}`, { method: 'DELETE' });
 		} catch (removeError) {
-			session = previousSession;
+			userComments = previousComments;
 			connectionWarning = removeError instanceof Error ? removeError.message : String(removeError);
 		}
 	}
@@ -565,12 +601,13 @@
 				const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
 				throw new Error(body?.error ?? 'Failed to change diff source');
 			}
-			session = (await response.json()) as ReviewSessionSnapshot;
-			worktreeCwd = session.cwd;
+			const nextSession = (await response.json()) as ReviewSessionSnapshot;
+			applySnapshot(nextSession, true);
+			worktreeCwd = nextSession.cwd;
 			void loadBranchRefs(reviewId);
 			void loadWorktrees(reviewId);
-			const defaultStrategy: ReviewStrategy = session.commits?.length ? 'commits' : 'flat';
-			strategy = availableStrategies(session).includes(defaultStrategy) ? defaultStrategy : 'flat';
+			const defaultStrategy: ReviewStrategy = nextSession.commits?.length ? 'commits' : 'flat';
+			strategy = availableStrategies(nextSession).includes(defaultStrategy) ? defaultStrategy : 'flat';
 			sortOrder = 'tree';
 			resetPartTransition();
 			currentPartIndex = 0;
@@ -647,6 +684,11 @@
 		const target = event.target as HTMLElement | null;
 		const inputType = target instanceof HTMLInputElement ? target.type : undefined;
 		const inEditor = target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT' || (target?.tagName === 'INPUT' && inputType !== 'checkbox' && inputType !== 'radio');
+		if (event.key === 'Escape' && enlargedAttachment) {
+			event.preventDefault();
+			enlargedAttachment = undefined;
+			return;
+		}
 		if (event.key === 'Escape' && (commentDraft || modelDialog || overviewDialog || shortcutsDialog || completionDialog)) {
 			event.preventDefault();
 			commentDraft = undefined;
@@ -830,7 +872,7 @@
 	}
 
 	function editComment(comment: UserReviewComment) {
-		commentDraft = { id: comment.id, scope: comment.scope, file: comment.file, line: comment.line, side: comment.side, endLine: comment.endLine, endSide: comment.endSide, body: comment.body };
+		commentDraft = { id: comment.id, scope: comment.scope, file: comment.file, line: comment.line, side: comment.side, endLine: comment.endLine, endSide: comment.endSide, body: comment.body, attachments: comment.attachments };
 	}
 
 	async function handleCommentImagePaste(file: File) {
@@ -842,7 +884,10 @@
 		});
 		if (!response.ok) return;
 		const { path } = (await response.json()) as { path: string };
-		mdEditor?.insertText(`![pasted image](/api/reviews/${reviewId}/attachments?path=${encodeURIComponent(path)})`);
+		const id = commentAttachments.length + 1;
+		const src = `/api/reviews/${reviewId}/attachments?path=${encodeURIComponent(path)}`;
+		if (commentDraft) commentDraft.attachments = [...(commentDraft.attachments ?? []), { label: `Image ${id}`, src }];
+		mdEditor?.insertText(`![Image ${id}]`);
 	}
 
 	function highlightEntry(id: string) {
@@ -860,8 +905,61 @@
 		return selectedFile ?? diffViewer?.currentFile() ?? activeFile;
 	}
 
-	function renderMarkdown(markdown: string, fallback = 'No description available.') {
-		return renderReviewMarkdown(markdown, reviewId ?? '', fallback);
+	function renderMarkdown(markdown: string, fallback = 'No description available.', attachments: { src: string }[] = []) {
+		return renderReviewMarkdown(markdown, reviewId ?? '', fallback, attachments);
+	}
+
+	function normalizeCommentDraft(draft: CommentDraft): CommentDraft {
+		const refs = [...referencedImageIds(draft.body)].sort((left, right) => left - right);
+		if (refs.length === 0) return { ...draft, attachments: undefined };
+		const idMap = new Map<number, number>();
+		const attachments = refs.flatMap((id) => {
+			const attachment = draft.attachments?.[id - 1];
+			if (!attachment) return [];
+			idMap.set(id, idMap.size + 1);
+			return [attachment];
+		});
+		const body = draft.body.replace(/!\[Image\s*(\d+)\](?!\()/gim, (match, id: string) => idMap.has(Number(id)) ? `![Image ${idMap.get(Number(id))}]` : match);
+		return { ...draft, body, attachments: attachments.length ? attachments : undefined };
+	}
+
+	function referencedImageIds(markdown: string) {
+		const refs = new Set<number>();
+		for (const match of markdown.matchAll(/!\[Image\s*(\d+)\](?!\()/gim)) refs.add(Number(match[1]));
+		return refs;
+	}
+
+	function extractCommentAttachments(markdown: string): CommentAttachment[] {
+		const attachments: CommentAttachment[] = [];
+		const seen = new Set<string>();
+		const draftAttachments = commentDraft?.attachments ?? [];
+		for (const id of referencedImageIds(markdown)) {
+			const src = draftAttachments[id - 1]?.src;
+			if (!src || seen.has(src)) continue;
+			seen.add(src);
+			attachments.push({ id, label: `Image ${id}`, src });
+		}
+		const legacyPattern = /#\[Image\s*(\d*)\]\(([^\s)]+)(?:\s+"[^"]*")?\)|!\[[^\]]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)|(^|\s)(\/[^\s)]+\.(?:png|jpe?g|gif|webp))/gim;
+		let match: RegExpExecArray | null;
+		while ((match = legacyPattern.exec(markdown))) {
+			const src = match[2] ?? match[3] ?? (match[5] ? `/api/reviews/${reviewId}/attachments?path=${encodeURIComponent(match[5])}` : '');
+			if (!src || seen.has(src)) continue;
+			seen.add(src);
+			const id = Number(match[1]) || attachments.length + 1;
+			attachments.push({ id, label: `Image ${id}`, src, raw: match[0] });
+		}
+		return attachments.sort((left, right) => left.id - right.id);
+	}
+
+	function removeCommentAttachment(attachment: CommentAttachment) {
+		if (!commentDraft) return;
+		commentDraft.attachments = (commentDraft.attachments ?? []).filter((item) => item.src !== attachment.src);
+		commentDraft.body = commentDraft.body
+			.replace(new RegExp(`!\\[Image\\s*${attachment.id}\\](?!\\()`, 'i'), '')
+			.replace(/!\[Image\s*(\d+)\](?!\()/gim, (match, id: string) => Number(id) > attachment.id ? `![Image ${Number(id) - 1}]` : match)
+			.replace(attachment.raw ?? '', '')
+			.replace(/\n{3,}/g, '\n\n')
+			.trim();
 	}
 
 	async function focusCompletionDialog() {
@@ -902,7 +1000,7 @@
 		</header>
 
 		{#if leftOpen}
-		<aside class="grid min-w-0 content-start gap-0 overflow-x-hidden border-b border-border bg-bg p-0 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-y-auto lg:border-b-0 lg:border-r">
+		<aside class="flex min-w-0 flex-col gap-0 overflow-x-hidden border-b border-border bg-bg p-0 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-hidden lg:border-b-0 lg:border-r">
 			{#if connectionWarning}<section class="border border-warning/40 bg-warning-soft p-[0.3125rem] text-sm text-warning">{connectionWarning}</section>{/if}
 			<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
 				<div class="flex items-center justify-between gap-1.5"><h2 class="text-[0.85rem] font-semibold">Diff source</h2><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{session.diffMode ?? 'diff'}</span></div>
@@ -925,8 +1023,8 @@
 				{#if diffSourceLoading}<p class="text-sm text-muted">Loading source…</p>{/if}
 				{#if diffSourceError}<p class="text-sm text-danger">{diffSourceError}</p>{/if}
 			</section>
-			<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
-				<div class="flex items-center justify-between gap-1.5"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{reviewedFileCount}/{visibleFiles.length}</span></div>
+			<section class="flex min-h-0 min-w-0 flex-1 flex-col gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
+				<div class="flex flex-none items-center justify-between gap-1.5"><h2 class="text-[0.85rem] font-semibold">Files</h2><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{reviewedFileCount}/{visibleFiles.length}</span></div>
 				<FileTreeViewer files={visibleFiles} chunks={visibleChunks} {selectedFile} {activeFile} reviewed={reviewedFiles} progress={fileReviewProgress} progressUnits={fileReviewUnits} onSelect={(file) => (selectedFile = file)} onToggleReviewed={toggleReviewed} onSetReviewed={setFilesReviewed} />
 			</section>
 		</aside>
@@ -951,13 +1049,13 @@
 							</section>
 						{/if}
 					{/snippet}
-					<DiffViewer bind:this={diffViewer} {session} {findings} {hunks} chunks={visibleChunks} {visibleHunkIds} reviewedHunks={reviewed} {cueEnabled} {singlePartInView} reviewed={reviewedFiles} progress={fileReviewProgress} {selectedFile} {targetFindingId} {targetCommentId} {diffStyle} {wrap} footer={diffFooter} onActiveChange={(detail) => { activeFile = detail.file; }} onComment={startLineComment} onCommentRange={startLineRangeComment} onFileComment={(file) => (commentDraft = { scope: 'file', file, body: '' })} onToggleReviewed={toggleReviewed} onEditComment={editComment} onDeleteComment={removeComment} />
+					<DiffViewer bind:this={diffViewer} {session} {findings} {hunks} chunks={visibleChunks} {visibleHunkIds} reviewedHunks={reviewed} {cueEnabled} {singlePartInView} reviewed={reviewedFiles} progress={fileReviewProgress} {userComments} {selectedFile} {targetFindingId} {targetCommentId} {diffStyle} {wrap} footer={diffFooter} onActiveChange={(detail) => { activeFile = detail.file; }} onComment={startLineComment} onCommentRange={startLineRangeComment} onFileComment={(file) => (commentDraft = { scope: 'file', file, body: '' })} onToggleReviewed={toggleReviewed} onEditComment={editComment} onDeleteComment={removeComment} />
 				</div>
 			{/key}
 		</main>
 
 		{#if rightOpen}
-			<aside class="flex min-w-0 flex-col gap-0 overflow-x-hidden border-t border-border bg-bg p-0 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-y-auto lg:border-t-0 lg:border-l">
+			<aside class="flex min-w-0 flex-col gap-0 overflow-x-hidden border-t border-border bg-bg p-0 lg:sticky lg:top-[var(--topbar-height)] lg:h-[calc(100vh-var(--topbar-height))] lg:overflow-hidden lg:border-t-0 lg:border-l">
 				<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
 					<div class="flex items-center justify-between gap-1.5">
 						<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (aiOpen = !aiOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if aiOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}AI review</h2></button>
@@ -1019,13 +1117,13 @@
 						{#if findings.length === 0}<p class="text-sm text-muted">No agent comments yet.</p>{:else}<div class="grid gap-1">{#each findings as finding (finding.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-1"><span class="{severityClass(finding)} px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase">{finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove finding" onclick={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><div class="rendered-markdown text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
 					{/if}
 				</section>
-				<section class="grid min-w-0 gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
-					<div class="flex items-center justify-between gap-1.5">
+				<section class="flex min-h-0 min-w-0 flex-1 flex-col gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
+					<div class="flex flex-none items-center justify-between gap-1.5">
 						<button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (userCommentsOpen = !userCommentsOpen)}><h2 class="flex items-center gap-[0.1875rem] text-[0.85rem] font-semibold">{#if userCommentsOpen}<ChevronDown size={15} />{:else}<ChevronRight size={15} />{/if}User comments</h2></button>
 						<div class="flex flex-none items-center gap-1"><button class="px-1 py-[0.0625rem] text-xs" title="Comment overall (O)" onclick={() => (commentDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={13} />comment</button><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{userComments.length}</span></div>
 					</div>
 					{#if userCommentsOpen}
-						{#if userComments.length === 0}<p class="text-sm text-muted">Click line numbers, add file comments, or comment overall.</p>{:else}<div class="grid gap-1">{#each userComments as comment (comment.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === comment.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><span class="flex min-w-0 items-center gap-1"><small class="min-w-0 truncate text-muted">{comment.scope === 'global' ? 'Overall' : comment.scope === 'file' ? comment.file : `${comment.file}:${comment.line}`}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-surface-hover hover:text-fg" title="Edit" aria-label="Edit comment" onclick={() => editComment(comment)}><Edit3 size={14} /></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove comment" onclick={() => removeComment(comment)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><div class="rendered-markdown text-sm">{@html renderMarkdown(comment.body)}</div></button></div>{/each}</div>{/if}
+						{#if userComments.length === 0}<p class="text-sm text-muted">Click line numbers, add file comments, or comment overall.</p>{:else}<div class="grid min-h-0 gap-1 overflow-y-auto pr-0.5">{#each userComments as comment (comment.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === comment.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><span class="flex min-w-0 items-center gap-1"><small class="min-w-0 truncate text-muted">{comment.scope === 'global' ? 'Overall' : comment.scope === 'file' ? comment.file : `${comment.file}:${comment.line}`}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-surface-hover hover:text-fg" title="Edit" aria-label="Edit comment" onclick={() => editComment(comment)}><Edit3 size={14} /></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove comment" onclick={() => removeComment(comment)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><div class="rendered-markdown text-sm">{@html renderMarkdown(comment.body, 'No description available.', comment.attachments)}</div></button></div>{/each}</div>{/if}
 					{/if}
 				</section>
 				<div class="mt-auto flex justify-end p-[0.3125rem]"><Button size="icon-md" class="text-muted hover:text-fg" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onclick={() => (shortcutsDialog = true)}><HelpCircle size={15} /></Button></div>
@@ -1125,8 +1223,33 @@
 				<h2 id="comment-dialog-title" class="text-[0.95rem] font-semibold">{commentDraft.id ? 'Edit comment' : 'Add comment'}</h2>
 				<p class="text-xs text-muted">{commentDraft.scope === 'global' ? 'Overall review' : commentDraft.scope === 'file' ? commentDraft.file : `${commentDraft.file}:${commentDraft.line}${commentDraft.endLine && commentDraft.endLine !== commentDraft.line ? `-${commentDraft.endLine}` : ''} · ${commentDraft.side}`}</p>
 				<MarkdownEditor bind:this={mdEditor} bind:value={commentDraft.body} onImagePaste={handleCommentImagePaste} />
+				{#if commentAttachments.length > 0}
+					<div class="grid gap-1 border border-border bg-surface-2 p-1.5">
+						<p class="text-xs font-semibold uppercase text-muted">Attachments</p>
+						<div class="grid grid-cols-[repeat(auto-fill,minmax(7rem,1fr))] gap-1.5">
+							{#each commentAttachments as attachment (attachment.src)}
+								<figure class="grid gap-1 border border-border bg-surface p-1">
+									<div class="flex items-center justify-between gap-1">
+										<button type="button" class="border-0 bg-transparent p-0 text-xs font-semibold text-muted hover:bg-transparent hover:text-fg" onclick={() => (enlargedAttachment = attachment)}>{attachment.label}</button>
+										<button type="button" class="border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title={`Remove ${attachment.label}`} aria-label={`Remove ${attachment.label}`} onclick={() => removeCommentAttachment(attachment)}><Trash2 size={14} /></button>
+									</div>
+									<button type="button" class="border-0 bg-transparent p-0 hover:bg-transparent" onclick={() => (enlargedAttachment = attachment)}><img class="h-24 w-full object-contain" src={attachment.src} alt={attachment.label} /></button>
+								</figure>
+							{/each}
+						</div>
+					</div>
+				{/if}
 				<div class="flex justify-end gap-1 pt-0.5"><button title="Close dialog (Esc)" type="button" onclick={() => (commentDraft = undefined)}>Cancel</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Save comment (Ctrl+S or Cmd+Enter)" type="submit">Save</button></div>
 			</form>
+		</div>
+	</div>
+{/if}
+
+{#if enlargedAttachment}
+	<div role="presentation" class="modal-backdrop fixed inset-0 z-50 grid place-items-center p-3" onclick={(event) => backdropClick(event, () => (enlargedAttachment = undefined))}>
+		<div role="dialog" aria-modal="true" aria-label={enlargedAttachment.label} class="grid max-h-[90vh] max-w-[90vw] gap-1.5 border border-border bg-surface p-2.5 shadow-[0_16px_48px_var(--shadow)]">
+			<div class="flex items-center justify-between gap-2"><strong class="text-sm">{enlargedAttachment.label}</strong><button type="button" onclick={() => (enlargedAttachment = undefined)}>Close</button></div>
+			<img class="max-h-[80vh] max-w-[86vw] object-contain" src={enlargedAttachment.src} alt={enlargedAttachment.label} />
 		</div>
 	</div>
 {/if}

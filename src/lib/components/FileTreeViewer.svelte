@@ -193,7 +193,7 @@
 	}
 </script>
 
-<div class="mb-1 grid grid-cols-[auto_minmax(0,1fr)] items-center bg-surface-2 {!selectedFile ? 'bg-surface-hover font-medium' : ''}">
+<div class="mb-1 grid flex-none grid-cols-[auto_minmax(0,1fr)] items-center bg-surface-2 {!selectedFile ? 'bg-surface-hover font-medium' : ''}">
 	<button
 		class="grid h-7 w-7 place-items-center border-0 bg-transparent p-0 text-review hover:bg-surface-hover"
 		title={`${rootProgress}% reviewed`}
@@ -209,4 +209,4 @@
 		class="w-full justify-start border-0 bg-transparent px-1.5 py-[0.1875rem] text-left text-sm hover:bg-surface-hover"
 		onclick={() => onSelect?.(undefined)}>All files</button>
 </div>
-<div class="max-h-72 min-h-48 overflow-auto lg:h-[calc(100vh-14rem)] lg:max-h-none lg:min-h-72" bind:this={host}></div>
+<div class="min-h-48 flex-1 overflow-auto lg:min-h-0" bind:this={host}></div>

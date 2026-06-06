@@ -38,13 +38,20 @@ const ALLOWED_TAGS = new Set([
 	'ul'
 ]);
 
-export function renderReviewMarkdown(markdown: string, reviewId: string, fallback = ''): string {
+export function renderReviewMarkdown(markdown: string, reviewId: string, fallback = '', attachments: { src: string }[] = []): string {
 	const source = markdown.trim() || fallback;
-	return sanitizeRenderedHtml(marked.parse(renderableMarkdown(source, reviewId), { async: false, gfm: true, breaks: true }) as string);
+	return sanitizeRenderedHtml(marked.parse(renderableMarkdown(source, reviewId, attachments), { async: false, gfm: true, breaks: true }) as string);
 }
 
-function renderableMarkdown(markdown: string, reviewId: string) {
-	return markdown.trim().replace(/^[ \t]*(\/[^\n\r\s)]+\.(?:png|jpe?g|gif|webp))[ \t]*$/gim, (_match, path: string) => `![pasted image](/api/reviews/${reviewId}/attachments?path=${encodeURIComponent(path)})`);
+function renderableMarkdown(markdown: string, reviewId: string, attachments: { src: string }[]) {
+	return markdown.trim()
+		.replace(/!\[Image\s*(\d+)\](?!\()/gim, (_match, id: string) => {
+			const src = attachments[Number(id) - 1]?.src;
+			return src ? `![Image ${id}](${src})` : `#[Image ${id}]`;
+		})
+		.replace(/#\[Image\s*(\d+)\]\(([^\s)]+)(?:\s+"[^"]*")?\)/gim, (_match, id: string, src: string) => `![Image ${id}](${src})`)
+		.replace(/!\[[^\]]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)/gim, (_match, src: string) => `![Image](${src})`)
+		.replace(/^[ \t]*(\/[^\n\r\s)]+\.(?:png|jpe?g|gif|webp))[ \t]*$/gim, (_match, path: string) => `![Image](/api/reviews/${reviewId}/attachments?path=${encodeURIComponent(path)})`);
 }
 
 function sanitizeRenderedHtml(html: string) {

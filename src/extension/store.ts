@@ -130,12 +130,12 @@ export function addUserComment(id: string, input: Omit<UserReviewComment, 'id' |
 	return comment;
 }
 
-export function updateUserComment(id: string, commentId: string, body: string): UserReviewComment | undefined {
+export function updateUserComment(id: string, commentId: string, input: { body: string; attachments?: UserReviewComment['attachments'] }): UserReviewComment | undefined {
 	let updated: UserReviewComment | undefined;
 	update(id, (snapshot) => {
 		const userComments = snapshot.userComments.map((comment) => {
 			if (comment.id !== commentId) return comment;
-			updated = { ...comment, body };
+			updated = { ...comment, body: input.body, attachments: input.attachments };
 			return updated;
 		});
 		return { ...snapshot, userComments };

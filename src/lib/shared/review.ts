@@ -107,6 +107,11 @@ export interface ReviewFinding {
 	source: 'agent' | 'heuristic';
 }
 
+export interface UserReviewCommentAttachment {
+	label: string;
+	src: string;
+}
+
 export interface UserReviewComment {
 	id: string;
 	scope: UserReviewCommentScope;
@@ -116,6 +121,7 @@ export interface UserReviewComment {
 	endLine?: number;
 	endSide?: ReviewSide;
 	body: string;
+	attachments?: UserReviewCommentAttachment[];
 	createdAt: string;
 }
 

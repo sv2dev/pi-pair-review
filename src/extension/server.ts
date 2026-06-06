@@ -297,12 +297,13 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 
 	if (req.method === 'PATCH' && tail === 'comments' && itemId) {
 		void readJson(req).then((body) => {
-			const commentBody = typeof (body as Record<string, unknown>).body === 'string' ? (body as Record<string, string>).body.trim() : '';
+			const value = body as Record<string, unknown>;
+			const commentBody = typeof value.body === 'string' ? value.body.trim() : '';
 			if (!commentBody) {
 				writeJson(res, 400, { error: 'Missing comment body' });
 				return;
 			}
-			const comment = updateUserComment(id, itemId, commentBody);
+			const comment = updateUserComment(id, itemId, { body: commentBody, attachments: normalizeCommentAttachments(value.attachments) });
 			writeJson(res, comment ? 200 : 404, comment ?? { error: 'Review not found' });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
@@ -332,7 +333,7 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 				writeJson(res, 400, { error: 'Missing comment fields' });
 				return;
 			}
-			const comment = addUserComment(id, { scope, file, line, side, endLine, endSide, body: commentBody });
+			const comment = addUserComment(id, { scope, file, line, side, endLine, endSide, body: commentBody, attachments: normalizeCommentAttachments(value.attachments) });
 			writeJson(res, comment ? 200 : 404, comment ?? { error: 'Review not found' });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
@@ -602,6 +603,17 @@ async function loadWebHandler(): Promise<WebHandler> {
 	if (!existsSync(handlerPath)) return {};
 	const mod = (await import(pathToFileURL(handlerPath).href)) as { handler?: SvelteHandler };
 	return { handler: mod.handler };
+}
+
+function normalizeCommentAttachments(value: unknown) {
+	if (!Array.isArray(value)) return undefined;
+	return value.flatMap((item) => {
+		if (!item || typeof item !== 'object') return [];
+		const record = item as Record<string, unknown>;
+		const label = typeof record.label === 'string' ? record.label.trim() : '';
+		const src = typeof record.src === 'string' ? record.src.trim() : '';
+		return label && src ? [{ label, src }] : [];
+	});
 }
 
 function writeJson(res: ServerResponse, status: number, value: unknown): void {

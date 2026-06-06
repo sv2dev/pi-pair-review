@@ -36,6 +36,7 @@
 		wrap = false,
 		reviewed = new SvelteSet<string>(),
 		progress = new Map<string, number>(),
+		userComments = [],
 		onComment,
 		onCommentRange,
 		onToggleReviewed,
@@ -60,6 +61,7 @@
 		wrap?: boolean;
 		reviewed?: Set<string>;
 		progress?: ReadonlyMap<string, number>;
+		userComments?: UserReviewComment[];
 		onComment?: (detail: { file: string; line: number; side: 'additions' | 'deletions' }) => void;
 		onCommentRange?: (file: string, range: SelectedLineRange | null) => void;
 		onToggleReviewed?: (file: string) => void;
@@ -75,8 +77,13 @@
 	let renderError = $state<string | undefined>();
 	let rendering = $state(true);
 	let renderSequence = 0;
+	let lastRenderKey = '';
 	let renderedFiles = $state.raw<FileDiffMetadata[]>([]);
 	let instances: FileDiffInstance<RenderComment>[] = [];
+	const diffInstances = new Map<string, FileDiffInstance<RenderComment>>();
+	const lineAnnotationKeysByFile = new Map<string, string>();
+	const lineAnnotationSlotKeysByFile = new Map<string, string>();
+	let appliedLineCommentsKey = '';
 	let modulePromise: Promise<typeof import('@pierre/diffs')> | undefined;
 	const fileContentsCache = new Map<string, Promise<FileDiffContents | undefined>>();
 	let prefersDark = $state(true);
@@ -93,22 +100,37 @@
 	const collapsedFiles = new SvelteSet<string>();
 
 	let effectiveDiffStyle = $derived(diffStyle === 'split' && containerWidth > 0 && containerWidth < 820 ? 'unified' : diffStyle);
-	let lineCommentKey = $derived(session.userComments.filter((comment) => comment.scope === 'line').map((comment) => `${comment.id}:${comment.scope}:${comment.file ?? ''}:${comment.line ?? ''}:${comment.side ?? ''}:${comment.body}`).join(','));
-	let fileCommentKey = $derived(session.userComments.filter((comment) => comment.scope === 'file').map((comment) => `${comment.id}:${comment.file ?? ''}:${comment.body}`).join(','));
+	let lineComments = $derived(userComments.filter((comment) => comment.scope === 'line'));
+	let fileCommentsByFile = $derived.by(() => {
+		const byFile = new Map<string, UserReviewComment[]>();
+		for (const comment of userComments) {
+			if (comment.scope !== 'file' || !comment.file) continue;
+			const comments = byFile.get(comment.file) ?? [];
+			comments.push(comment);
+			byFile.set(comment.file, comments);
+		}
+		return byFile;
+	});
+	let lineCommentsKey = $derived(lineComments.map((comment) => `${comment.id}:${comment.scope}:${comment.file ?? ''}:${comment.line ?? ''}:${comment.side ?? ''}:${comment.body}`).join(','));
 	let visibleHunkIdsKey = $derived([...visibleHunkIds].sort().join(','));
 	let reviewedHunksKey = $derived([...reviewedHunks].sort().join(','));
 	let cueKey = $derived(`${cueEnabled}:${singlePartInView}:${chunks.map((chunk) => `${chunk.id}:${chunk.cue ?? ''}`).join('|')}`);
-	let renderKey = $derived(`${session.id}:${hashString(session.patch)}:${findings.map((finding) => `${finding.id}:${finding.file ?? ''}:${finding.line ?? ''}:${finding.side ?? ''}:${finding.title}:${finding.rationale}:${finding.recommendation ?? ''}`).join(',')}:${lineCommentKey}:${selectedFile ?? '*'}:${visibleHunkIdsKey}:${cueKey}:${effectiveDiffStyle}:${wrap}`);
+	let renderKey = $derived(`${session.id}:${hashString(session.patch)}:${findings.map((finding) => `${finding.id}:${finding.file ?? ''}:${finding.line ?? ''}:${finding.side ?? ''}:${finding.title}:${finding.rationale}:${finding.recommendation ?? ''}`).join(',')}:${selectedFile ?? '*'}:${visibleHunkIdsKey}:${cueKey}:${effectiveDiffStyle}:${wrap}`);
 	let renderReadyAnimationKey = $derived(`${session.id}:${hashString(session.patch)}:${findings.map((finding) => finding.id).join(',')}:${selectedFile ?? '*'}:${visibleHunkIdsKey}:${cueKey}:${effectiveDiffStyle}:${wrap}`);
 	let hunkFilterKey = $derived(`${visibleHunkIdsKey}:${reviewedHunksKey}:${selectedFile ?? '*'}`);
 
 	$effect(() => {
-		fileCommentKey;
-		if (mounted) void updateLastFileScrollPadding();
+		const nextRenderKey = renderKey;
+		if (!mounted || !nextRenderKey || nextRenderKey === lastRenderKey) return;
+		lastRenderKey = nextRenderKey;
+		void renderDiffs();
 	});
 
 	$effect(() => {
-		if (mounted && renderKey) void renderDiffs();
+		const nextLineCommentsKey = lineCommentsKey;
+		if (!mounted || nextLineCommentsKey === appliedLineCommentsKey) return;
+		appliedLineCommentsKey = nextLineCommentsKey;
+		void updateLineAnnotations();
 	});
 
 	$effect(() => {
@@ -137,6 +159,8 @@
 			void renderDiffs();
 		};
 		media.addEventListener('change', updateTheme);
+		lastRenderKey = renderKey;
+		appliedLineCommentsKey = lineCommentsKey;
 		void renderDiffs();
 		return () => {
 			resizeObserver.disconnect();
@@ -153,6 +177,8 @@
 		const shouldAnimateReady = renderReadyAnimationKey !== readyAnimationKey;
 		animateReady = false;
 		cleanup();
+		lineAnnotationKeysByFile.clear();
+		lineAnnotationSlotKeysByFile.clear();
 		renderedFiles = [];
 		rendering = true;
 		renderError = undefined;
@@ -205,10 +231,14 @@
 				});
 
 				instances.push(instance);
+				diffInstances.set(file.name, instance);
+				const lineAnnotations = commentsFor(file);
+				lineAnnotationKeysByFile.set(file.name, lineAnnotationsKey(lineAnnotations));
+				lineAnnotationSlotKeysByFile.set(file.name, lineAnnotationSlotsKey(lineAnnotations));
 				instance.render({
 					fileDiff: file,
 					containerWrapper: host,
-					lineAnnotations: commentsFor(file)
+					lineAnnotations
 				});
 			}
 			void applyHunkVisibility();
@@ -252,7 +282,7 @@
 
 	export function editActiveComment() {
 		if (!activeCommentId) return false;
-		const comment = session.userComments.find((candidate) => candidate.id === activeCommentId);
+		const comment = userComments.find((candidate) => candidate.id === activeCommentId);
 		if (!comment) return false;
 		onEditComment?.(comment);
 		return true;
@@ -450,43 +480,113 @@
 			.review-reviewed-hunk[data-column-number]::before {
 				opacity: 0.28;
 			}
+			.inline-comment {
+				margin: 0.5rem 0 0.65rem;
+				padding: 0.625rem 0.75rem;
+				border: 1px solid var(--border);
+				border-left: 4px solid var(--border-strong);
+				background: var(--surface);
+				color: var(--fg);
+				font: 13px/1.55 var(--font-sans);
+				text-align: left;
+				box-shadow: 0 1px 2px var(--shadow);
+			}
+			.inline-comment.user {
+				border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+				border-left-color: var(--accent);
+				background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+			}
 			.inline-comment a {
 				color: var(--accent);
 				text-decoration: underline;
 			}
+			.inline-comment strong {
+				display: block;
+				margin-bottom: 0;
+				font-weight: 700;
+			}
+			.inline-comment-content {
+				display: grid;
+				grid-template-columns: minmax(0, 1fr) auto;
+				align-items: start;
+				gap: 0.75rem;
+			}
+			.inline-comment-body {
+				min-width: 0;
+			}
+			.inline-comment :is(p, ul, ol, pre, blockquote) {
+				margin: 0 0 0.55rem;
+			}
+			.inline-comment :is(p, ul, ol, pre, blockquote):last-child {
+				margin-bottom: 0;
+			}
+			.inline-comment :is(ul, ol) {
+				padding-left: 1.25rem;
+			}
+			.inline-comment ul { list-style: disc; }
+			.inline-comment ol { list-style: decimal; }
+			.inline-comment pre {
+				overflow: auto;
+				background: var(--code-bg);
+				padding: 0.5rem;
+			}
+			.inline-comment code {
+				background: var(--code-bg);
+				padding: 0.05rem 0.125rem;
+			}
 			.inline-comment-header {
 				display: flex;
-				align-items: center;
+				align-items: flex-start;
 				justify-content: space-between;
-				gap: 0.5rem;
+				gap: 0.75rem;
+			}
+			.inline-comment-title-group {
+				display: grid;
+				min-width: 0;
+				gap: 0.125rem;
+			}
+			.inline-comment-meta {
+				display: block;
+				min-width: 0;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+				color: var(--muted);
+				font-size: 0.75rem;
 			}
 			.inline-comment-actions {
 				display: inline-flex;
 				align-items: center;
-				gap: 0.25rem;
+				gap: 0.375rem;
 			}
 			.inline-comment-action {
-				display: inline-grid;
-				place-items: center;
-				width: 1.375rem;
-				height: 1.375rem;
-				padding: 0;
-				border: 1px solid transparent;
-				background: transparent;
-				color: var(--muted);
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				gap: 0.25rem;
+				min-width: 2rem;
+				height: 2rem;
+				padding: 0 0.5rem;
+				border: 1px solid var(--border-strong);
+				background: var(--surface);
+				color: var(--fg);
+				font: 700 0.75rem/1 var(--font-sans);
 				cursor: pointer;
 			}
 			.inline-comment-action:hover {
+				border-color: var(--border-strong);
 				background: var(--surface-hover);
 				color: var(--fg);
 			}
 			.inline-comment-action.danger:hover {
+				border-color: var(--danger);
 				background: var(--danger-soft);
 				color: var(--danger);
 			}
 			.inline-comment-action svg {
-				width: 0.875rem;
-				height: 0.875rem;
+				width: 1rem;
+				height: 1rem;
+				flex: none;
 				fill: none;
 				stroke: currentColor;
 				stroke-width: 2;
@@ -499,21 +599,65 @@
 	function cleanup() {
 		for (const instance of instances) instance.cleanUp();
 		instances = [];
+		diffInstances.clear();
+		lineAnnotationKeysByFile.clear();
+		lineAnnotationSlotKeysByFile.clear();
 		for (const host of diffHostElements.values()) host.replaceChildren();
 	}
 
 	function fileCommentsFor(file: FileDiffMetadata) {
-		return session.userComments.filter((comment) => comment.scope === 'file' && comment.file && (comment.file === file.name || comment.file === file.prevName));
+		const current = fileCommentsByFile.get(file.name) ?? [];
+		const previous = file.prevName && file.prevName !== file.name ? fileCommentsByFile.get(file.prevName) ?? [] : [];
+		return previous.length ? [...current, ...previous] : current;
 	}
 
 	function commentsFor(file: FileDiffMetadata): DiffLineAnnotation<RenderComment>[] {
 		const agent = findings
 			.filter((finding) => finding.file && finding.line && (finding.file === file.name || finding.file === file.prevName))
 			.map((finding) => ({ lineNumber: finding.line!, side: finding.side ?? 'additions', metadata: { kind: 'finding' as const, value: finding } }));
-		const user = session.userComments
-			.filter((comment) => comment.scope === 'line' && comment.file && comment.line && comment.side && (comment.file === file.name || comment.file === file.prevName))
+		const user = lineComments
+			.filter((comment) => comment.file && comment.line && comment.side && (comment.file === file.name || comment.file === file.prevName))
 			.map((comment) => ({ lineNumber: comment.line!, side: comment.side!, metadata: { kind: 'user' as const, value: comment } }));
 		return [...agent, ...user];
+	}
+
+	function lineAnnotationsKey(annotations: DiffLineAnnotation<RenderComment>[]) {
+		return annotations.map((annotation) => {
+			const metadata = annotation.metadata;
+			if (!metadata) return `${annotation.side}:${annotation.lineNumber}`;
+			if (metadata.kind === 'finding') return `finding:${metadata.value.id}:${annotation.side}:${annotation.lineNumber}:${metadata.value.title}:${metadata.value.rationale}:${metadata.value.recommendation ?? ''}`;
+			return `user:${metadata.value.id}:${annotation.side}:${annotation.lineNumber}:${metadata.value.file ?? ''}:${metadata.value.body}`;
+		}).join('\n');
+	}
+
+	function lineAnnotationSlotsKey(annotations: DiffLineAnnotation<RenderComment>[]) {
+		return [...new Set(annotations.map((annotation) => `${annotation.side}:${annotation.lineNumber}`))].sort().join('\n');
+	}
+
+	async function updateLineAnnotations() {
+		if (!container || renderedFiles.length === 0) return;
+		await tick();
+		for (const file of renderedFiles) {
+			const instance = diffInstances.get(file.name);
+			if (!instance) continue;
+			const lineAnnotations = commentsFor(file);
+			const nextKey = lineAnnotationsKey(lineAnnotations);
+			if (nextKey === lineAnnotationKeysByFile.get(file.name)) continue;
+			const previousSlotsKey = lineAnnotationSlotKeysByFile.get(file.name) ?? '';
+			const nextSlotsKey = lineAnnotationSlotsKey(lineAnnotations);
+			lineAnnotationKeysByFile.set(file.name, nextKey);
+			lineAnnotationSlotKeysByFile.set(file.name, nextSlotsKey);
+			if (nextSlotsKey === previousSlotsKey) {
+				const patchable = instance as unknown as { setLineAnnotations: (annotations: DiffLineAnnotation<RenderComment>[]) => void; renderAnnotations: () => void };
+				patchable.setLineAnnotations(lineAnnotations);
+				patchable.renderAnnotations();
+				continue;
+			}
+			instance.render({ fileDiff: file, lineAnnotations });
+		}
+		void applyHunkVisibility();
+		void updateLastFileScrollPadding();
+		markActiveElements();
 	}
 
 	async function applyHunkVisibility() {
@@ -758,7 +902,7 @@
 
 	async function scrollToComment(id: string) {
 		await tick();
-		const comment = session.userComments.find((candidate) => candidate.id === id);
+		const comment = userComments.find((candidate) => candidate.id === id);
 		if (comment?.scope === 'global') return;
 		if (comment?.file) {
 			expandFile(renderedFiles.find((file) => file.name === comment.file || file.prevName === comment.file)?.name ?? comment.file);
@@ -823,18 +967,17 @@
 			}
 		} else {
 			const userComment = metadata.value;
-			const header = document.createElement('div');
-			header.className = 'inline-comment-header';
+			const content = document.createElement('div');
+			content.className = 'inline-comment-content';
 			const actions = document.createElement('div');
 			actions.className = 'inline-comment-actions';
-			title.textContent = 'USER COMMENT';
 			actions.append(
-				inlineCommentAction('Edit comment', editIconSvg(), () => onEditComment?.(userComment)),
-				inlineCommentAction('Delete comment', trashIconSvg(), () => onDeleteComment?.(userComment), 'danger')
+				inlineCommentAction('Edit', editIconSvg(), () => onEditComment?.(userComment)),
+				inlineCommentAction('Delete', trashIconSvg(), () => onDeleteComment?.(userComment), 'danger')
 			);
-			header.append(title, actions);
-			body.innerHTML = renderMarkdown(userComment.body);
-			element.append(header, body);
+			body.innerHTML = renderMarkdown(userComment.body, userComment.attachments);
+			content.append(body, actions);
+			element.append(content);
 		}
 
 		return element;
@@ -844,9 +987,9 @@
 		const button = document.createElement('button');
 		button.type = 'button';
 		button.className = `inline-comment-action ${variant}`;
-		button.title = label;
-		button.setAttribute('aria-label', label);
-		button.innerHTML = icon;
+		button.title = `${label} comment`;
+		button.setAttribute('aria-label', `${label} comment`);
+		button.innerHTML = `${icon}<span>${label}</span>`;
 		button.onclick = (event) => {
 			event.preventDefault();
 			event.stopPropagation();
@@ -856,15 +999,15 @@
 	}
 
 	function editIconSvg() {
-		return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+		return '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
 	}
 
 	function trashIconSvg() {
-		return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+		return '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
 	}
 
-	function renderMarkdown(markdown: string) {
-		return renderReviewMarkdown(markdown, session.id);
+	function renderMarkdown(markdown: string, attachments: { src: string }[] = []) {
+		return renderReviewMarkdown(markdown, session.id, '', attachments);
 	}
 
 	function hashString(value: string) {
@@ -913,17 +1056,20 @@
 			</div>
 
 			{#if fileNotes.length > 0}
-				<div class="file-comments grid gap-1 border-b border-border p-1.5">
+				<div class="file-comments grid gap-2 border-b border-border p-2">
 					{#each fileNotes as comment (comment.id)}
-						<aside class="file-comment grid gap-1 border border-accent/35 bg-accent-soft p-1" class:review-active-comment={activeCommentId === comment.id} data-user-comment-id={comment.id}>
-							<div class="file-comment-header flex items-center justify-between gap-1">
-								<strong class="text-xs text-muted">File comment</strong>
-								<div class="file-comment-actions flex flex-none items-center gap-0.5">
-									<button type="button" class="file-comment-action" title="Edit comment" aria-label="Edit comment" onclick={() => onEditComment?.(comment)}><Edit3 size={13} /></button>
-									<button type="button" class="file-comment-action danger" title="Delete comment" aria-label="Delete comment" onclick={() => onDeleteComment?.(comment)}><Trash2 size={13} /></button>
+						<aside class="file-comment grid gap-2 rounded-md border border-accent/40 border-l-4 border-l-accent bg-surface p-2.5 shadow-sm" class:review-active-comment={activeCommentId === comment.id} data-user-comment-id={comment.id}>
+							<div class="file-comment-header flex items-start justify-between gap-2">
+								<div class="grid min-w-0 gap-0.5">
+									<strong class="text-xs font-semibold uppercase tracking-wide text-accent">File comment</strong>
+									<small class="truncate text-xs text-muted">{comment.file}</small>
+								</div>
+								<div class="file-comment-actions flex flex-none items-center gap-1">
+									<button type="button" class="file-comment-action" title="Edit comment" aria-label="Edit comment" onclick={() => onEditComment?.(comment)}><Edit3 size={16} /><span>Edit</span></button>
+									<button type="button" class="file-comment-action danger" title="Delete comment" aria-label="Delete comment" onclick={() => onDeleteComment?.(comment)}><Trash2 size={16} /><span>Delete</span></button>
 								</div>
 							</div>
-							<div class="file-comment-body comment-md min-w-0 text-sm">{@html renderMarkdown(comment.body)}</div>
+							<div class="file-comment-body rendered-markdown min-w-0 border-t border-border pt-1.5 text-sm leading-relaxed">{@html renderMarkdown(comment.body, comment.attachments)}</div>
 						</aside>
 					{/each}
 				</div>

@@ -16,7 +16,7 @@ export function buildSessionFeedback(session: ReviewSessionSnapshot | undefined)
 function buildFeedbackLines(findings: ReviewFinding[], comments: UserReviewComment[]): string[] {
 	const lines: string[] = [];
 	for (const finding of findings) lines.push(formatFeedbackLine(finding.file, finding.line, finding.title));
-	for (const comment of comments) lines.push(formatFeedbackLine(comment.file, comment.line, comment.body, comment.endLine));
+	for (const comment of comments) lines.push(formatFeedbackLine(comment.file, comment.line, comment.body, comment.endLine, comment.attachments));
 	return lines;
 }
 
@@ -25,8 +25,12 @@ function withReviewFeedbackPreamble(lines: string[]): string {
 	return [REVIEW_FEEDBACK_PREAMBLE, '', ...lines].join('\n');
 }
 
-function formatFeedbackLine(file: string | undefined, line: number | undefined, body: string, endLine?: number): string {
-	const formatted = body.replace(/\n/g, '\n  ');
+function formatFeedbackLine(file: string | undefined, line: number | undefined, body: string, endLine?: number, attachments: UserReviewComment['attachments'] = []): string {
+	const withAttachments = body.replace(/!\[Image\s*(\d+)\](?!\()/gim, (match, id: string) => {
+		const src = attachments[Number(id) - 1]?.src;
+		return src ? `${match}(${src})` : match;
+	});
+	const formatted = withAttachments.replace(/\n/g, '\n  ');
 	const lineLabel = line ? endLine && endLine !== line ? `:${line}-${endLine}` : `:${line}` : '';
 	return file ? `- [${file}${lineLabel}] ${formatted}` : `- ${formatted}`;
 }
