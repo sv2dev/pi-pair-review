@@ -7,7 +7,7 @@
 	import CircularCheckProgress from './CircularCheckProgress.svelte';
 	import { isReviewableImagePath } from '$lib/shared/images';
 	import { SvelteSet } from 'svelte/reactivity';
-	import { ChevronDown, ChevronRight, LoaderCircle, MessageSquarePlus, Trash2 } from '@lucide/svelte';
+	import { ChevronDown, ChevronRight, Edit3, LoaderCircle, MessageSquarePlus, Trash2 } from '@lucide/svelte';
 	import type { DiffLineAnnotation, FileContents, FileDiff as FileDiffInstance, FileDiffMetadata, SelectedLineRange } from '@pierre/diffs';
 	import type { ReviewChunk, ReviewFinding, ReviewHunk, ReviewSessionSnapshot, UserReviewComment } from '$lib/shared/review';
 
@@ -84,6 +84,8 @@
 	let activeCommentId = $state<string | undefined>();
 	let scrollFrame: number | undefined;
 	let quickScrollFrame: number | undefined;
+	let readyAnimationKey: string | undefined;
+	let animateReady = $state(false);
 	let containerWidth = $state(0);
 	let lastFileScrollPadding = $state(0);
 	const diffHostElements = new Map<string, HTMLDivElement>();
@@ -91,12 +93,19 @@
 	const collapsedFiles = new SvelteSet<string>();
 
 	let effectiveDiffStyle = $derived(diffStyle === 'split' && containerWidth > 0 && containerWidth < 820 ? 'unified' : diffStyle);
-	let diffCommentKey = $derived(session.userComments.filter((comment) => comment.scope !== 'global').map((comment) => `${comment.id}:${comment.scope}:${comment.file ?? ''}:${comment.line ?? ''}:${comment.side ?? ''}:${comment.body}`).join(','));
+	let lineCommentKey = $derived(session.userComments.filter((comment) => comment.scope === 'line').map((comment) => `${comment.id}:${comment.scope}:${comment.file ?? ''}:${comment.line ?? ''}:${comment.side ?? ''}:${comment.body}`).join(','));
+	let fileCommentKey = $derived(session.userComments.filter((comment) => comment.scope === 'file').map((comment) => `${comment.id}:${comment.file ?? ''}:${comment.body}`).join(','));
 	let visibleHunkIdsKey = $derived([...visibleHunkIds].sort().join(','));
 	let reviewedHunksKey = $derived([...reviewedHunks].sort().join(','));
 	let cueKey = $derived(`${cueEnabled}:${singlePartInView}:${chunks.map((chunk) => `${chunk.id}:${chunk.cue ?? ''}`).join('|')}`);
-	let renderKey = $derived(`${session.id}:${hashString(session.patch)}:${findings.map((finding) => `${finding.id}:${finding.file ?? ''}:${finding.line ?? ''}:${finding.side ?? ''}:${finding.title}:${finding.rationale}:${finding.recommendation ?? ''}`).join(',')}:${diffCommentKey}:${selectedFile ?? '*'}:${visibleHunkIdsKey}:${cueKey}:${effectiveDiffStyle}:${wrap}`);
+	let renderKey = $derived(`${session.id}:${hashString(session.patch)}:${findings.map((finding) => `${finding.id}:${finding.file ?? ''}:${finding.line ?? ''}:${finding.side ?? ''}:${finding.title}:${finding.rationale}:${finding.recommendation ?? ''}`).join(',')}:${lineCommentKey}:${selectedFile ?? '*'}:${visibleHunkIdsKey}:${cueKey}:${effectiveDiffStyle}:${wrap}`);
+	let renderReadyAnimationKey = $derived(`${session.id}:${hashString(session.patch)}:${findings.map((finding) => finding.id).join(',')}:${selectedFile ?? '*'}:${visibleHunkIdsKey}:${cueKey}:${effectiveDiffStyle}:${wrap}`);
 	let hunkFilterKey = $derived(`${visibleHunkIdsKey}:${reviewedHunksKey}:${selectedFile ?? '*'}`);
+
+	$effect(() => {
+		fileCommentKey;
+		if (mounted) void updateLastFileScrollPadding();
+	});
 
 	$effect(() => {
 		if (mounted && renderKey) void renderDiffs();
@@ -141,6 +150,8 @@
 	async function renderDiffs() {
 		if (!container) return;
 		const sequence = ++renderSequence;
+		const shouldAnimateReady = renderReadyAnimationKey !== readyAnimationKey;
+		animateReady = false;
 		cleanup();
 		renderedFiles = [];
 		rendering = true;
@@ -202,8 +213,13 @@
 			}
 			void applyHunkVisibility();
 			void updateLastFileScrollPadding();
+			if (shouldAnimateReady) {
+				readyAnimationKey = renderReadyAnimationKey;
+				animateReady = true;
+			}
 			markActiveElements();
 			if (targetFindingId) void scrollToFinding(targetFindingId);
+			if (targetCommentId) void scrollToComment(targetCommentId);
 			updateActiveFromScroll();
 		} catch (error) {
 			renderError = error instanceof Error ? error.message : String(error);
@@ -362,13 +378,22 @@
 
 	function toggleFileCollapsed(file: string) {
 		if (isFileCollapsed(file)) {
-			collapsedFiles.delete(file);
-			expandedFiles.add(file);
+			expandFile(file);
 		} else {
 			expandedFiles.delete(file);
 			collapsedFiles.add(file);
 		}
 		void updateLastFileScrollPadding();
+	}
+
+	function expandFile(file: string) {
+		collapsedFiles.delete(file);
+		expandedFiles.add(file);
+	}
+
+	function sectionForFile(file: string) {
+		const metadata = renderedFiles.find((candidate) => candidate.name === file || candidate.prevName === file);
+		return container.querySelector<HTMLElement>(`[data-file="${CSS.escape(metadata?.name ?? file)}"]`);
 	}
 
 	function registerDiffHost(file: string) {
@@ -424,6 +449,49 @@
 			}
 			.review-reviewed-hunk[data-column-number]::before {
 				opacity: 0.28;
+			}
+			.inline-comment a {
+				color: var(--accent);
+				text-decoration: underline;
+			}
+			.inline-comment-header {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 0.5rem;
+			}
+			.inline-comment-actions {
+				display: inline-flex;
+				align-items: center;
+				gap: 0.25rem;
+			}
+			.inline-comment-action {
+				display: inline-grid;
+				place-items: center;
+				width: 1.375rem;
+				height: 1.375rem;
+				padding: 0;
+				border: 1px solid transparent;
+				background: transparent;
+				color: var(--muted);
+				cursor: pointer;
+			}
+			.inline-comment-action:hover {
+				background: var(--surface-hover);
+				color: var(--fg);
+			}
+			.inline-comment-action.danger:hover {
+				background: var(--danger-soft);
+				color: var(--danger);
+			}
+			.inline-comment-action svg {
+				width: 0.875rem;
+				height: 0.875rem;
+				fill: none;
+				stroke: currentColor;
+				stroke-width: 2;
+				stroke-linecap: round;
+				stroke-linejoin: round;
 			}
 		`;
 	}
@@ -692,10 +760,16 @@
 		await tick();
 		const comment = session.userComments.find((candidate) => candidate.id === id);
 		if (comment?.scope === 'global') return;
+		if (comment?.file) {
+			expandFile(renderedFiles.find((file) => file.name === comment.file || file.prevName === comment.file)?.name ?? comment.file);
+			await tick();
+		}
 		if (comment?.scope === 'file' && comment.file) {
-			const section = container.querySelector<HTMLElement>(`[data-file="${CSS.escape(comment.file)}"]`);
-			section?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-			if (section) flashElement(section);
+			const section = sectionForFile(comment.file);
+			const element = container.querySelector(`[data-user-comment-id="${CSS.escape(id)}"]`);
+			(element ?? section)?.scrollIntoView({ block: element ? 'center' : 'start', behavior: 'smooth' });
+			if (element) flashElement(element as HTMLElement);
+			else if (section) flashElement(section);
 			return;
 		}
 		const element = container.querySelector(`[data-user-comment-id="${CSS.escape(id)}"]`);
@@ -705,7 +779,7 @@
 			return;
 		}
 		if (!comment?.file || !comment.line) return;
-		const section = container.querySelector<HTMLElement>(`[data-file="${CSS.escape(comment.file)}"]`);
+		const section = sectionForFile(comment.file);
 		const line = section ? diffHost(section)?.shadowRoot?.querySelector(`[data-line="${comment.line}"]`) : undefined;
 		if (line) {
 			line.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -734,6 +808,7 @@
 
 		const title = document.createElement('strong');
 		const body = document.createElement('div');
+		body.className = 'inline-comment-body';
 		if (metadata.kind === 'finding') {
 			const finding = metadata.value;
 			title.textContent = `${finding.severity.toUpperCase()} · ${finding.title}`;
@@ -747,12 +822,45 @@
 				element.append(recommendation);
 			}
 		} else {
+			const userComment = metadata.value;
+			const header = document.createElement('div');
+			header.className = 'inline-comment-header';
+			const actions = document.createElement('div');
+			actions.className = 'inline-comment-actions';
 			title.textContent = 'USER COMMENT';
-			body.innerHTML = renderMarkdown(metadata.value.body);
-			element.append(title, body);
+			actions.append(
+				inlineCommentAction('Edit comment', editIconSvg(), () => onEditComment?.(userComment)),
+				inlineCommentAction('Delete comment', trashIconSvg(), () => onDeleteComment?.(userComment), 'danger')
+			);
+			header.append(title, actions);
+			body.innerHTML = renderMarkdown(userComment.body);
+			element.append(header, body);
 		}
 
 		return element;
+	}
+
+	function inlineCommentAction(label: string, icon: string, action: () => void, variant: 'default' | 'danger' = 'default') {
+		const button = document.createElement('button');
+		button.type = 'button';
+		button.className = `inline-comment-action ${variant}`;
+		button.title = label;
+		button.setAttribute('aria-label', label);
+		button.innerHTML = icon;
+		button.onclick = (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			action();
+		};
+		return button;
+	}
+
+	function editIconSvg() {
+		return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+	}
+
+	function trashIconSvg() {
+		return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
 	}
 
 	function renderMarkdown(markdown: string) {
@@ -786,7 +894,7 @@
 	{#if rendering}
 		<div class="diff-loading grid place-items-center border border-border bg-surface p-8 text-sm text-muted"><span class="inline-flex items-center gap-1.5"><LoaderCircle class="animate-spin" size={15} />Loading diffs…</span></div>
 	{/if}
-	<div class="diff-ready-content" class:diff-ready={renderedFiles.length > 0 && !rendering}>
+	<div class="diff-ready-content" class:diff-ready={animateReady && renderedFiles.length > 0 && !rendering}>
 	{#each renderedFiles as file (file.name)}
 		{@const collapsed = isFileCollapsed(file.name)}
 		{@const fileNotes = fileCommentsFor(file)}
@@ -807,9 +915,15 @@
 			{#if fileNotes.length > 0}
 				<div class="file-comments grid gap-1 border-b border-border p-1.5">
 					{#each fileNotes as comment (comment.id)}
-						<aside class="file-comment grid grid-cols-[minmax(0,1fr)_auto] items-start gap-1 border border-accent/35 bg-accent-soft p-1" class:review-active-comment={activeCommentId === comment.id} data-user-comment-id={comment.id}>
-							<button type="button" class="file-comment-body comment-md block w-full min-w-0 border-0 bg-transparent p-0 text-left text-sm hover:bg-transparent" onclick={() => onEditComment?.(comment)}>{@html renderMarkdown(comment.body)}</button>
-							<button type="button" class="file-comment-remove flex-none border-0 bg-transparent p-0.5 text-danger hover:bg-transparent" title="Delete comment" aria-label="Delete comment" onclick={() => onDeleteComment?.(comment)}><Trash2 size={14} /></button>
+						<aside class="file-comment grid gap-1 border border-accent/35 bg-accent-soft p-1" class:review-active-comment={activeCommentId === comment.id} data-user-comment-id={comment.id}>
+							<div class="file-comment-header flex items-center justify-between gap-1">
+								<strong class="text-xs text-muted">File comment</strong>
+								<div class="file-comment-actions flex flex-none items-center gap-0.5">
+									<button type="button" class="file-comment-action" title="Edit comment" aria-label="Edit comment" onclick={() => onEditComment?.(comment)}><Edit3 size={13} /></button>
+									<button type="button" class="file-comment-action danger" title="Delete comment" aria-label="Delete comment" onclick={() => onDeleteComment?.(comment)}><Trash2 size={13} /></button>
+								</div>
+							</div>
+							<div class="file-comment-body comment-md min-w-0 text-sm">{@html renderMarkdown(comment.body)}</div>
 						</aside>
 					{/each}
 				</div>

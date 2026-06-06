@@ -802,7 +802,7 @@
 	}
 
 	function selectFinding(finding: ReviewFinding) {
-		if (selectedFile && finding.file) selectedFile = finding.file;
+		if (finding.file) selectedFile = finding.file;
 		targetCommentId = undefined;
 		targetFindingId = finding.id;
 		highlightEntry(finding.id);
@@ -813,7 +813,7 @@
 			editComment(comment);
 			return;
 		}
-		if (selectedFile && comment.file) selectedFile = comment.file;
+		if (comment.file) selectedFile = comment.file;
 		targetFindingId = undefined;
 		targetCommentId = comment.id;
 		highlightEntry(comment.id);
@@ -936,7 +936,7 @@
 			{#key currentPartKey}
 				<div class="part-review-content {animatePartTransition ? 'part-slide-in' : ''}" style={`--part-slide-x: ${partTransitionDirection * 2.5}rem;`} onanimationend={resetPartTransition}>
 					{#if currentPart?.brief?.trim()}
-						<section class="grid min-w-0 gap-0.5 border border-border bg-surface p-[0.3125rem]">
+						<section class="brief-attention-target grid min-w-0 gap-0.5 border border-border bg-surface p-[0.3125rem]" class:brief-attention={animatePartTransition}>
 							<span class="text-[0.66rem] font-semibold uppercase text-muted">{currentPart.title}</span>
 							<div class="rendered-markdown text-sm">{@html renderMarkdown(currentPart.brief)}</div>
 						</section>
@@ -1138,6 +1138,21 @@
 
 	.part-slide-in {
 		animation: part-slide-fade-in 180ms ease-out;
+	}
+
+	.brief-attention {
+		animation: brief-attention-flash 900ms ease-out;
+	}
+
+	@keyframes brief-attention-flash {
+		0%, 100% {
+			border-color: var(--border);
+			box-shadow: none;
+		}
+		18% {
+			border-color: var(--accent);
+			box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+		}
 	}
 
 	@keyframes part-slide-fade-in {
