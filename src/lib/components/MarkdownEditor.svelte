@@ -50,10 +50,10 @@
 	]);
 
 	const theme = EditorView.theme({
-		'&': { backgroundColor: 'transparent', color: 'var(--fg)', fontSize: '13px' },
+		'&': { backgroundColor: 'transparent', color: 'var(--fg)', cursor: 'text', fontSize: '13px', minHeight: '10rem' },
 		'&.cm-focused': { outline: 'none' },
-		'.cm-content': { fontFamily: 'var(--font-mono)', padding: '0.7rem', caretColor: 'var(--fg)' },
-		'.cm-scroller': { fontFamily: 'var(--font-mono)', lineHeight: '1.55' },
+		'.cm-content': { caretColor: 'var(--fg)', fontFamily: 'var(--font-mono)', minHeight: '10rem', padding: '0.7rem' },
+		'.cm-scroller': { cursor: 'text', fontFamily: 'var(--font-mono)', lineHeight: '1.55', minHeight: '10rem' },
 		'.cm-cursor': { borderLeftColor: 'var(--fg)' },
 		'.cm-placeholder': { color: 'var(--muted)' },
 		'.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
@@ -98,6 +98,12 @@
 </script>
 
 <div
-	class="min-h-40 overflow-auto border border-border-strong bg-bg focus-within:outline focus-within:outline-2 focus-within:outline-accent"
+	aria-label={placeholder}
+	aria-multiline="true"
+	role="textbox"
+	tabindex="0"
+	class="min-h-40 cursor-text overflow-auto border border-border-strong bg-bg focus-within:outline focus-within:outline-2 focus-within:outline-accent"
 	bind:this={host}
+	onfocus={() => view?.focus()}
+	onpointerdown={() => view?.focus()}
 ></div>

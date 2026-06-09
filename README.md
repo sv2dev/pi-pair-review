@@ -1,4 +1,4 @@
-# Pi Pair Review
+# Story Review
 
 Pi coding-agent extension with a lean SvelteKit review UI powered by `@pierre/diffs`.
 
@@ -10,17 +10,17 @@ npm run build
 pi -e .
 ```
 
-Then run `/pair-review` inside Pi.
+Then run `/story-review` inside Pi.
 
 Commands:
 
-- `/pair-review` — auto-detect: uncommitted changes, otherwise the last commit
-- `/pair-review --unstaged` or `/pair-review -u` — review unstaged changes
-- `/pair-review --staged` or `/pair-review -s` — review staged changes
-- `/pair-review --uncommitted` or `/pair-review -c` — review staged and unstaged changes against `HEAD`
-- `/pair-review --branch` — review committed branch changes against `origin/main...HEAD`
-- `/pair-review --branch <base>`, `/pair-review --base <base>`, or `/pair-review <base>` — review committed branch changes against `<base>...HEAD`
-- `/pair-review --cwd <path>` — review from another git worktree; can be combined with the diff options above
+- `/story-review` — auto-detect: uncommitted changes, otherwise the last commit
+- `/story-review --unstaged` or `/story-review -u` — review unstaged changes
+- `/story-review --staged` or `/story-review -s` — review staged changes
+- `/story-review --uncommitted` or `/story-review -c` — review staged and unstaged changes against `HEAD`
+- `/story-review --branch` — review committed branch changes against `origin/main...HEAD`
+- `/story-review --branch <base>`, `/story-review --base <base>`, or `/story-review <base>` — review committed branch changes against `<base>...HEAD`
+- `/story-review --cwd <path>` — review from another git worktree; can be combined with the diff options above
 
 Compatible extensions can set the active review cwd by appending a session custom entry named `pi-active-cwd` with `{ "cwd": "/path/to/worktree" }`. Append `{ "cwd": null }` to clear it. Explicit `--cwd` wins.
 

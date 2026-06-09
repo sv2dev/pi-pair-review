@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import type { ReviewDiffMode, ReviewFileSummary, ReviewFinding, ReviewHunkRank, ReviewSessionCreateInput, ReviewSessionSnapshot, UserReviewComment, ReviewThinkingLevel } from '../lib/shared/review.ts';
+import { buildSessionFeedback } from '../lib/shared/feedback.ts';
+import type { ReviewCommit, ReviewDiffMode, ReviewFileSummary, ReviewFinding, ReviewHunk, ReviewSessionCreateInput, ReviewSessionSnapshot, ReviewSmartPartition, UserReviewComment, ReviewThinkingLevel } from '../lib/shared/review.ts';
+import { parseReviewHunks } from './diff.ts';
 
 type Listener = (snapshot: ReviewSessionSnapshot) => void;
 type FeedbackHandler = (feedback: string) => void;
@@ -12,16 +14,17 @@ const agentReviewHandlers = new Map<string, AgentReviewHandler>();
 
 export function createReviewSession(input: ReviewSessionCreateInput): ReviewSessionSnapshot {
 	const id = randomUUID();
-	const { onFeedback, onAgentReview, ...snapshotInput } = input;
+	const { onFeedback, onAgentReview, commits, ...snapshotInput } = input;
 	const snapshot: ReviewSessionSnapshot = {
 		...snapshotInput,
 		id,
 		createdAt: new Date().toISOString(),
+		hunks: parseReviewHunks(input.patch),
+		commits: commits ?? [],
 		userComments: [],
 		preReview: {
 			status: 'idle',
-			findings: [],
-			hunks: []
+			findings: []
 		}
 	};
 	sessions.set(id, snapshot);
@@ -63,34 +66,23 @@ export function markPreReviewRunning(id: string, model?: string): void {
 	}));
 }
 
-export function markHeuristicPreReview(id: string, hunks: ReviewHunkRank[]): void {
-	update(id, (snapshot) => ({
-		...snapshot,
-		preReview: {
-			...snapshot.preReview,
-			status: 'idle',
-			summary: undefined,
-			findings: [],
-			hunks
-		}
-	}));
-}
-
-export function markPreReviewDone(id: string, findings: ReviewFinding[], hunks: ReviewHunkRank[], summary?: string): void {
+export function markPreReviewDone(id: string, payload: { overview?: string; assessment?: string; comments: ReviewFinding[]; smart?: ReviewSmartPartition; causalityOrder?: string[] }): void {
 	update(id, (snapshot) => ({
 		...snapshot,
 		preReview: {
 			...snapshot.preReview,
 			status: 'done',
 			finishedAt: new Date().toISOString(),
-			summary,
-			findings,
-			hunks
+			overview: payload.overview,
+			assessment: payload.assessment,
+			findings: payload.comments,
+			smart: payload.smart,
+			causalityOrder: payload.causalityOrder
 		}
 	}));
 }
 
-export function markPreReviewFailed(id: string, error: string, findings: ReviewFinding[], hunks: ReviewHunkRank[]): void {
+export function markPreReviewFailed(id: string, error: string, findings: ReviewFinding[] = []): void {
 	update(id, (snapshot) => ({
 		...snapshot,
 		preReview: {
@@ -98,13 +90,12 @@ export function markPreReviewFailed(id: string, error: string, findings: ReviewF
 			status: 'failed',
 			finishedAt: new Date().toISOString(),
 			error,
-			findings,
-			hunks
+			findings
 		}
 	}));
 }
 
-export function replaceReviewDiff(id: string, input: { cwd?: string; title: string; baseDescription: string; diffMode: ReviewDiffMode; diffBase?: string; patch: string; files: ReviewFileSummary[]; hunks: ReviewHunkRank[] }): boolean {
+export function replaceReviewDiff(id: string, input: { cwd?: string; title: string; baseDescription: string; diffMode: ReviewDiffMode; diffBase?: string; patch: string; files: ReviewFileSummary[]; commits?: ReviewCommit[] }): boolean {
 	let replaced = false;
 	update(id, (snapshot) => {
 		replaced = true;
@@ -117,11 +108,12 @@ export function replaceReviewDiff(id: string, input: { cwd?: string; title: stri
 			diffBase: input.diffBase,
 			patch: input.patch,
 			files: input.files,
+			hunks: parseReviewHunks(input.patch),
+			commits: input.commits ?? [],
 			userComments: [],
 			preReview: {
 				status: 'idle',
-				findings: [],
-				hunks: input.hunks
+				findings: []
 			}
 		};
 	});
@@ -138,12 +130,12 @@ export function addUserComment(id: string, input: Omit<UserReviewComment, 'id' |
 	return comment;
 }
 
-export function updateUserComment(id: string, commentId: string, body: string): UserReviewComment | undefined {
+export function updateUserComment(id: string, commentId: string, input: { body: string; attachments?: UserReviewComment['attachments'] }): UserReviewComment | undefined {
 	let updated: UserReviewComment | undefined;
 	update(id, (snapshot) => {
 		const userComments = snapshot.userComments.map((comment) => {
 			if (comment.id !== commentId) return comment;
-			updated = { ...comment, body };
+			updated = { ...comment, body: input.body, attachments: input.attachments };
 			return updated;
 		});
 		return { ...snapshot, userComments };
@@ -174,7 +166,7 @@ export function removeReviewFinding(id: string, findingId: string): boolean {
 export function finishReview(id: string, feedback?: string): boolean {
 	const handler = feedbackHandlers.get(id);
 	if (!handler) return false;
-	handler(feedback?.trim() ? feedback : buildFeedback(sessions.get(id)));
+	handler(feedback?.trim() ? feedback : buildSessionFeedback(sessions.get(id)));
 	feedbackHandlers.delete(id);
 	agentReviewHandlers.delete(id);
 	return true;
@@ -182,7 +174,7 @@ export function finishReview(id: string, feedback?: string): boolean {
 
 export function getReviewFeedback(id: string): string | undefined {
 	const session = sessions.get(id);
-	return session ? buildFeedback(session) : undefined;
+	return session ? buildSessionFeedback(session) : undefined;
 }
 
 export function isReviewFinished(id: string): boolean {
@@ -205,20 +197,6 @@ function update(id: string, fn: (snapshot: ReviewSessionSnapshot) => ReviewSessi
 	if (!current) return;
 	sessions.set(id, fn(current));
 	emit(id);
-}
-
-function buildFeedback(session: ReviewSessionSnapshot | undefined): string {
-	if (!session) return '';
-	const lines: string[] = [];
-	for (const finding of session.preReview.findings) lines.push(formatFeedbackLine(finding.file, finding.line, finding.title));
-	for (const comment of session.userComments) lines.push(formatFeedbackLine(comment.file, comment.line, comment.body, comment.endLine));
-	return lines.join('\n');
-}
-
-function formatFeedbackLine(file: string | undefined, line: number | undefined, body: string, endLine?: number): string {
-	const formatted = body.replace(/\n/g, '\n  ');
-	const lineLabel = line ? endLine && endLine !== line ? `:${line}-${endLine}` : `:${line}` : '';
-	return file ? `- [${file}${lineLabel}] ${formatted}` : `- ${formatted}`;
 }
 
 function emit(id: string): void {

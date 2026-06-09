@@ -8,8 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import { addUserComment, finishReview, getReviewFeedback, getReviewSession, isReviewFinished, removeReviewFinding, removeUserComment, replaceReviewDiff, reviewListenerCount, startAgentReview, subscribeToReviewSession, updateUserComment } from './store.ts';
-import { buildDiffCommandFromSelection, summarizePatchFiles, type DiffMode } from './diff.ts';
-import { buildHeuristicPreReview } from './pre-review.ts';
+import { attributeCommitHunks, buildDiffCommandFromSelection, enumerateCommits, parseReviewHunks, summarizePatchFiles, type DiffMode } from './diff.ts';
 import { readReviewUiSettings, updateReviewUiSettings } from './settings.ts';
 import { imageContentType, isReviewableImagePath } from '../lib/shared/images.ts';
 import type { ReviewSessionSnapshot } from '../lib/shared/review.ts';
@@ -248,10 +247,11 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 			}
 			const patch = diff.stdout.trimEnd();
 			if (!patch.trim()) {
-				writeJson(res, 400, { error: `No ${diffCommand.baseDescription} found` });
+				writeJson(res, 400, { error: `No changes found for ${diffCommand.baseDescription}` });
 				return;
 			}
-			const heuristicReview = buildHeuristicPreReview(patch);
+			const commits = await enumerateCommits(targetCwd, diffCommand.mode, diffCommand.base);
+			await attributeCommitHunks(targetCwd, commits, parseReviewHunks(patch));
 			replaceReviewDiff(id, {
 				cwd: targetCwd,
 				title: `Review ${diffCommand.baseDescription}`,
@@ -260,7 +260,7 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 				diffBase: diffCommand.base,
 				patch,
 				files: summarizePatchFiles(patch),
-				hunks: heuristicReview.hunks
+				commits
 			});
 			writeJson(res, 200, getReviewSession(id) ?? { ok: true });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
@@ -288,7 +288,7 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 		void readBuffer(req).then(async (buffer) => {
 			const name = url.searchParams.get('name') ?? 'image.png';
 			const extension = sanitizeExtension(extname(name)) || '.png';
-			const path = join(tmpdir(), `pi-pair-review-${randomUUID()}${extension}`);
+			const path = join(tmpdir(), `story-review-${randomUUID()}${extension}`);
 			await writeFile(path, buffer);
 			writeJson(res, 200, { path });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
@@ -297,12 +297,13 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 
 	if (req.method === 'PATCH' && tail === 'comments' && itemId) {
 		void readJson(req).then((body) => {
-			const commentBody = typeof (body as Record<string, unknown>).body === 'string' ? (body as Record<string, string>).body.trim() : '';
+			const value = body as Record<string, unknown>;
+			const commentBody = typeof value.body === 'string' ? value.body.trim() : '';
 			if (!commentBody) {
 				writeJson(res, 400, { error: 'Missing comment body' });
 				return;
 			}
-			const comment = updateUserComment(id, itemId, commentBody);
+			const comment = updateUserComment(id, itemId, { body: commentBody, attachments: normalizeCommentAttachments(value.attachments) });
 			writeJson(res, comment ? 200 : 404, comment ?? { error: 'Review not found' });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
@@ -332,7 +333,7 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 				writeJson(res, 400, { error: 'Missing comment fields' });
 				return;
 			}
-			const comment = addUserComment(id, { scope, file, line, side, endLine, endSide, body: commentBody });
+			const comment = addUserComment(id, { scope, file, line, side, endLine, endSide, body: commentBody, attachments: normalizeCommentAttachments(value.attachments) });
 			writeJson(res, comment ? 200 : 404, comment ?? { error: 'Review not found' });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
@@ -604,6 +605,17 @@ async function loadWebHandler(): Promise<WebHandler> {
 	return { handler: mod.handler };
 }
 
+function normalizeCommentAttachments(value: unknown) {
+	if (!Array.isArray(value)) return undefined;
+	return value.flatMap((item) => {
+		if (!item || typeof item !== 'object') return [];
+		const record = item as Record<string, unknown>;
+		const label = typeof record.label === 'string' ? record.label.trim() : '';
+		const src = typeof record.src === 'string' ? record.src.trim() : '';
+		return label && src ? [{ label, src }] : [];
+	});
+}
+
 function writeJson(res: ServerResponse, status: number, value: unknown): void {
 	res.writeHead(status, { 'content-type': 'application/json' });
 	res.end(JSON.stringify(value));
@@ -620,7 +632,7 @@ function renderMissingBuildPage(): string {
 <head>
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
-	<title>Pi Pair Review</title>
+	<title>Story Review</title>
 	<style>
 		body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #0f1115; color: #e7eaf0; }
 		main { max-width: 760px; margin: 12vh auto; padding: 16px; background: #171a21; border: 1px solid #2a2f3a; }
@@ -629,8 +641,8 @@ function renderMissingBuildPage(): string {
 </head>
 <body>
 	<main>
-		<h1>Pi Pair Review webapp is not built</h1>
-		<p>Run <code>npm run build</code> in the extension package, then start <code>/pair-review</code> again.</p>
+		<h1>Story Review webapp is not built</h1>
+		<p>Run <code>npm run build</code> in the extension package, then start <code>/story-review</code> again.</p>
 	</main>
 </body>
 </html>`;
