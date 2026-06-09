@@ -112,7 +112,7 @@ export default function storyReviewExtension(pi: ExtensionAPI) {
 					defaultModelKey: recommendedModel ? modelKey(recommendedModel) : ctx.model ? modelKey(ctx.model) : reviewModels[0] ? modelKey(reviewModels[0]) : undefined,
 					defaultThinkingLevel: 'off'
 				},
-				onFeedback: (feedback) => {
+				onFeedback: (feedback, options) => {
 					feedbackTodos = extractFeedbackTodos(feedback);
 					renderFeedbackTodoWidget(ctx, feedbackTodos);
 					void summarizeFeedbackTodos(ctx, feedbackTodos, feedback).then((summaries) => {
@@ -120,7 +120,8 @@ export default function storyReviewExtension(pi: ExtensionAPI) {
 						feedbackTodos = feedbackTodos.map((todo, index) => ({ ...todo, text: summaries[index] ?? todo.text }));
 						renderFeedbackTodoWidget(ctx, feedbackTodos);
 					});
-					deferEditorInsert(ctx, feedback, returnFocusApp);
+					if (options?.sendDirectly) sendFeedbackToAgent(pi, ctx, feedback, returnFocusApp);
+					else deferEditorInsert(ctx, feedback, returnFocusApp);
 				},
 				onAgentReview: ({ modelKey: key, thinkingLevel, suggestComments }) => {
 					const model = reviewModels.find((candidate) => modelKey(candidate) === key);
@@ -435,6 +436,17 @@ function renderFeedbackTodoWidget(ctx: ExtensionContext, todos: FeedbackTodo[]):
 		lines.push(`${marker} ${index + 1}. ${text}`);
 	}
 	ctx.ui.setWidget('story-review-feedback', lines, { placement: 'belowEditor' });
+}
+
+function sendFeedbackToAgent(pi: ExtensionAPI, ctx: ExtensionCommandContext, feedback: string, returnFocusApp?: string): void {
+	focusApp(returnFocusApp);
+	try {
+		pi.sendUserMessage(feedback, ctx.isIdle() ? undefined : { deliverAs: 'followUp' });
+		ctx.ui.notify('Story review feedback sent to agent.', 'info');
+	} catch (error) {
+		ctx.ui.notify(`Could not send Story review feedback directly: ${error instanceof Error ? error.message : String(error)}`, 'warning');
+		deferEditorInsert(ctx, feedback, returnFocusApp);
+	}
 }
 
 function deferEditorInsert(ctx: ExtensionCommandContext, feedback: string, returnFocusApp?: string): void {

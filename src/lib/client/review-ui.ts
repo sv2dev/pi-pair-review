@@ -8,7 +8,7 @@ export interface ReviewPartition {
 export function buildPartition(strategy: ReviewStrategy, snapshot: ReviewSessionSnapshot): ReviewPartition {
 	if (strategy === 'smart') {
 		const smart = snapshot.preReview.smart;
-		return smart ? { parts: [...smart.parts], chunks: [...smart.chunks] } : { parts: [], chunks: [] };
+		return smart ? removeEmptyParts({ parts: [...smart.parts], chunks: [...smart.chunks] }) : { parts: [], chunks: [] };
 	}
 	if (strategy === 'commits') {
 		const commits = snapshot.commits ?? [];
@@ -21,11 +21,16 @@ export function buildPartition(strategy: ReviewStrategy, snapshot: ReviewSession
 			commitSha: commit.sha
 		}));
 		const chunks: ReviewChunk[] = commits.flatMap((commit, index) => chunksFromHunkIds(commit.hunkIds, snapshot, parts[index]!.id));
-		return { parts, chunks };
+		return removeEmptyParts({ parts, chunks });
 	}
 	const part: ReviewPart = { id: 'part-flat', kind: 'flat', title: 'All changes', order: 0 };
 	const chunks = chunksFromHunkIds(snapshot.hunks.map((hunk) => hunk.id), snapshot, part.id);
 	return { parts: [part], chunks };
+}
+
+function removeEmptyParts(partition: ReviewPartition): ReviewPartition {
+	const partIdsWithChunks = new Set(partition.chunks.map((chunk) => chunk.partId));
+	return { parts: partition.parts.filter((part) => partIdsWithChunks.has(part.id)), chunks: partition.chunks };
 }
 
 function chunksFromHunkIds(hunkIds: string[], snapshot: ReviewSessionSnapshot, partId: string): ReviewChunk[] {

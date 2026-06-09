@@ -341,8 +341,10 @@ function handleApiRequest(req: IncomingMessage, res: ServerResponse, url: URL): 
 
 	if (req.method === 'POST' && tail === 'finish') {
 		void readJson(req).then((body) => {
-			const feedback = typeof (body as Record<string, unknown>).feedback === 'string' ? (body as Record<string, string>).feedback : '';
-			writeJson(res, finishReview(id, feedback) ? 200 : 404, { ok: true });
+			const value = body as Record<string, unknown>;
+			const feedback = typeof value.feedback === 'string' ? value.feedback : '';
+			const sendDirectly = value.sendDirectly === true;
+			writeJson(res, finishReview(id, feedback, { sendDirectly }) ? 200 : 404, { ok: true });
 		}).catch((error) => writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) }));
 		return;
 	}

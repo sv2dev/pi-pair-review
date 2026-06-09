@@ -22,6 +22,7 @@ export type ReviewUiSettings = Partial<{
 	autorun: ReviewAutorunSettings;
 	isolatedPart: boolean;
 	autoAdvance: boolean;
+	sendFeedbackDirectly: boolean;
 	diffStyle: 'split' | 'unified';
 	wrap: boolean;
 }>;
@@ -62,6 +63,7 @@ function sanitizeSettings(value: ReviewUiSettings): ReviewUiSettings {
 	if (autorun) next.autorun = autorun;
 	if (typeof value.isolatedPart === 'boolean') next.isolatedPart = value.isolatedPart;
 	if (typeof value.autoAdvance === 'boolean') next.autoAdvance = value.autoAdvance;
+	if (typeof value.sendFeedbackDirectly === 'boolean') next.sendFeedbackDirectly = value.sendFeedbackDirectly;
 	if (value.diffStyle === 'split' || value.diffStyle === 'unified') next.diffStyle = value.diffStyle;
 	if (typeof value.wrap === 'boolean') next.wrap = value.wrap;
 	return next;

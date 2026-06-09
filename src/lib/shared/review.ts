@@ -83,6 +83,7 @@ export interface ReviewUiSettings {
 	};
 	isolatedPart?: boolean;
 	autoAdvance?: boolean;
+	sendFeedbackDirectly?: boolean;
 	diffStyle?: ReviewDiffStyle;
 	wrap?: boolean;
 }
@@ -177,6 +178,6 @@ export interface ReviewSessionCreateInput {
 	files: ReviewFileSummary[];
 	commits?: ReviewCommit[];
 	agentReview: ReviewSessionSnapshot['agentReview'];
-	onFeedback?: (feedback: string) => void;
+	onFeedback?: (feedback: string, options?: { sendDirectly?: boolean }) => void;
 	onAgentReview?: (input: { modelKey: string; thinkingLevel: ReviewThinkingLevel; suggestComments: boolean }) => void;
 }

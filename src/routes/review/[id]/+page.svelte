@@ -7,11 +7,10 @@
 	import { buildReviewFeedback } from '$lib/shared/feedback';
 	import { isReviewableImagePath } from '$lib/shared/images';
 	import Button from '$lib/components/Button.svelte';
-	import CircularCheckProgress from '$lib/components/CircularCheckProgress.svelte';
 	import DiffViewer from '$lib/components/DiffViewer.svelte';
 	import FileTreeViewer from '$lib/components/FileTreeViewer.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
-	import { Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, Edit3, HelpCircle, LoaderCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, BookOpenText, SquareSplitHorizontal, TextWrap } from '@lucide/svelte';
+	import { Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, Edit3, HelpCircle, LoaderCircle, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Settings, Trash2, BookOpenText, SquareSplitHorizontal, TextWrap, X } from '@lucide/svelte';
 	import type { SelectedLineRange } from '@pierre/diffs';
 	import type { ReviewChunk, ReviewDiffMode, ReviewDiffStyle, ReviewFinding, ReviewSessionSnapshot, ReviewSortOrder, ReviewStrategy, ReviewUiSettings, UserReviewComment } from '$lib/shared/review';
 
@@ -64,12 +63,14 @@
 	let copyFailed = $state(false);
 	let celebrateReviewComplete = $state(false);
 	let completionDialog = $state(false);
+	let showCompletionConfetti = $state(false);
 	let closingNotes = $state('');
 	let strategy = $state<ReviewStrategy>('flat');
 	let sortOrder = $state<ReviewSortOrder>('tree');
 	let cueEnabled = $state(true);
 	let isolatedPart = $state(false);
 	let autoAdvance = $state(false);
+	let sendFeedbackDirectly = $state(false);
 	let currentPartIndex = $state(0);
 	let animatePartTransition = $state(false);
 	let partTransitionDirection = $state<1 | -1>(1);
@@ -121,23 +122,27 @@
 	let visibleParts = $derived(isolatedPart && currentPart ? [currentPart] : orderedParts.slice(0, safePartIndex + 1));
 	let visiblePartIds = $derived(new SvelteSet(visibleParts.map((part) => part.id)));
 	let visibleChunks = $derived(orderChunks(partition.chunks.filter((chunk) => visiblePartIds.has(chunk.partId)), sortOrder, session?.preReview.causalityOrder));
+	let reviewHunkIds = $derived([...new Set(partition.chunks.flatMap((chunk) => chunk.hunkIds))]);
 	let visibleHunkIds = $derived(new SvelteSet(visibleChunks.flatMap((chunk) => chunk.hunkIds)));
 	let visibleFileSet = $derived(new SvelteSet(visibleChunks.map((chunk) => chunk.file)));
 	let visibleFiles = $derived(sortFilesForTree(files.filter((file) => visibleFileSet.has(file.path) || (file.previousPath && visibleFileSet.has(file.previousPath)))));
 	let reviewedFiles = $derived(new SvelteSet(visibleFiles.filter((file) => isFileReviewed(file.path)).map((file) => file.path)));
 	let reviewedFileCount = $derived(visibleFiles.filter((file) => reviewedFiles.has(file.path)).length);
-	let reviewProgress = $derived(hunks.length ? Math.round(([...reviewed].filter((id) => hunks.some((hunk) => hunk.id === id)).length / hunks.length) * 100) : 0);
-	let reviewScopeComplete = $derived(hunks.length > 0 && hunks.every((hunk) => reviewed.has(hunk.id)));
+	let reviewProgress = $derived(reviewHunkIds.length ? Math.round((reviewHunkIds.filter((id) => reviewed.has(id)).length / reviewHunkIds.length) * 100) : 0);
+	let reviewScopeComplete = $derived(reviewHunkIds.length > 0 && reviewHunkIds.every((id) => reviewed.has(id)));
 	let fileReviewUnits = $derived(fileReviewUnitMap());
 	let fileReviewProgress = $derived(new Map([...fileReviewUnits].map(([file, units]) => [file, units.total ? Math.round((units.reviewed / units.total) * 100) : 0] as const)));
-	let feedbackText = $derived(buildReviewFeedback(findings, userComments, closingNotes));
+	let feedbackText = $derived(buildReviewFeedback(findings, userComments, closingNotes, reviewId));
+	let hasFeedback = $derived(feedbackText.trim().length > 0);
+	let approveTitle = $derived(hasFeedback ? 'Approve disabled while feedback comments exist' : 'Approve (Cmd/Ctrl+Enter)');
+	let rejectTitle = $derived(hasFeedback ? 'Reject (Cmd/Ctrl+Enter)' : 'Reject (Cmd/Ctrl+Shift+Enter)');
 	let gridColumnsClass = $derived(leftOpen
 		? rightOpen ? 'lg:grid-cols-[17rem_minmax(0,1fr)_19rem]' : 'lg:grid-cols-[17rem_minmax(0,1fr)]'
 		: rightOpen ? 'lg:grid-cols-[minmax(0,1fr)_19rem]' : 'lg:grid-cols-[minmax(0,1fr)]');
 	let selectedAgentModel = $derived(session?.agentReview.models.find((model) => model.key === agentModelKey));
 	let selectedWorktree = $derived(worktrees.find((worktree) => worktree.path === worktreeCwd));
 	let preferredBranchBase = $derived(selectPreferredBranchBase(branchRefs, selectedWorktree?.branch));
-	let reviewSettingsJson = $derived(JSON.stringify({ modelKey: agentModelKey, thinkingLevel: agentThinkingLevel, suggestComments, strategy, sortOrder, cueEnabled, autorun: { ...(autorunSettings ?? { enabled: false, unconditional: false }), enabled: autorunEnabled }, isolatedPart, autoAdvance, diffStyle, wrap }));
+	let reviewSettingsJson = $derived(JSON.stringify({ modelKey: agentModelKey, thinkingLevel: agentThinkingLevel, suggestComments, strategy, sortOrder, cueEnabled, autorun: { ...(autorunSettings ?? { enabled: false, unconditional: false }), enabled: autorunEnabled }, isolatedPart, autoAdvance, sendFeedbackDirectly, diffStyle, wrap }));
 
 	$effect(() => {
 		if (orderedParts.length > 0 && currentPartIndex > orderedParts.length - 1) {
@@ -305,6 +310,7 @@
 		cueEnabled = stored.cueEnabled ?? true;
 		isolatedPart = stored.isolatedPart ?? false;
 		autoAdvance = stored.autoAdvance ?? false;
+		sendFeedbackDirectly = stored.sendFeedbackDirectly ?? false;
 		resetPartTransition();
 		currentPartIndex = 0;
 		diffStyle = stored.diffStyle ?? 'split';
@@ -321,12 +327,16 @@
 		}
 	}
 
-	function persistReviewSettings(settingsJson = reviewSettingsJson) {
-		void fetch('/api/settings', {
-			method: 'PATCH',
-			headers: { 'content-type': 'application/json' },
-			body: settingsJson
-		});
+	async function persistReviewSettings(settingsJson = reviewSettingsJson) {
+		try {
+			await fetch('/api/settings', {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				body: settingsJson
+			});
+		} catch {
+			// Ignore settings persistence failures; the current finish payload still carries the selected behavior.
+		}
 	}
 
 	function restoreDiffSource(nextSession: ReviewSessionSnapshot) {
@@ -394,7 +404,7 @@
 			if (nextReviewed) reviewed.add(id);
 			else reviewed.delete(id);
 		}
-		const isComplete = hunks.length > 0 && hunks.every((hunk) => reviewed.has(hunk.id));
+		const isComplete = reviewHunkIds.length > 0 && reviewHunkIds.every((id) => reviewed.has(id));
 		if (!wasComplete && isComplete) celebrateCompletion();
 		else if (autoAdvance && hasNextPart && !wasCurrentPartComplete && isCurrentPartComplete()) {
 			stepPart(1);
@@ -471,6 +481,7 @@
 
 	function celebrateCompletion() {
 		celebrateReviewComplete = true;
+		showCompletionConfetti = true;
 		completionDialog = true;
 		setTimeout(() => (celebrateReviewComplete = false), 2200);
 	}
@@ -695,12 +706,14 @@
 			modelDialog = false;
 			overviewDialog = false;
 			shortcutsDialog = false;
-			completionDialog = false;
+			closeCompletionDialog();
 			return;
 		}
 		if (completionDialog && (event.metaKey || event.ctrlKey) && event.key === 'Enter') {
 			event.preventDefault();
-			void finish();
+			const approveRequested = event.shiftKey ? hasFeedback : !hasFeedback;
+			if (approveRequested && hasFeedback) return;
+			void finish({ approve: approveRequested });
 			return;
 		}
 		if (commentDraft && ((event.ctrlKey && event.key.toLowerCase() === 's') || (event.metaKey && event.key === 'Enter'))) {
@@ -721,12 +734,12 @@
 		}
 		if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
 			event.preventDefault();
-			void finish();
+			openCompletionDialog();
 			return;
 		}
 		if (event.key === 'W') {
 			event.preventDefault();
-			void finish();
+			openCompletionDialog();
 			return;
 		}
 		if (event.key === 'ArrowDown' && event.altKey) {
@@ -823,10 +836,22 @@
 		}
 	}
 
-	async function finish(options?: { keepalive?: boolean }) {
+	function openCompletionDialog() {
+		showCompletionConfetti = false;
+		completionDialog = true;
+	}
+
+	function closeCompletionDialog() {
+		showCompletionConfetti = false;
+		completionDialog = false;
+	}
+
+	async function finish(options?: { keepalive?: boolean; approve?: boolean }) {
 		if (finished || !session) return;
 		finished = true;
-		const payload = JSON.stringify({ feedback: feedbackText });
+		const feedback = options?.approve ? 'Approved' : feedbackText;
+		await persistReviewSettings();
+		const payload = JSON.stringify({ feedback, sendDirectly: sendFeedbackDirectly });
 		if (options?.keepalive && navigator.sendBeacon) {
 			navigator.sendBeacon(`/api/reviews/${reviewId}/finish`, new Blob([payload], { type: 'application/json' }));
 			return;
@@ -994,7 +1019,7 @@
 					<Button size="md" class={wrap ? 'view-toggle-active' : 'view-toggle-inactive'} title="Toggle line wrapping" aria-label="Toggle line wrapping" aria-pressed={wrap} onclick={() => (wrap = !wrap)}><TextWrap size={15} /><span class="hidden xl:inline">Wrap</span></Button>
 				</div>
 				<Button size="md" title="Copy feedback" onclick={copyFeedback}><Clipboard size={15} /><span class="hidden sm:inline">{copied ? 'Copied' : copyFailed ? 'Copy failed' : 'Copy feedback'}</span></Button>
-				<Button size="md" class="feedback-progress {reviewScopeComplete ? 'review-complete' : ''} {celebrateReviewComplete ? 'review-progress-complete' : ''}" title={`Insert feedback (${reviewProgress}% reviewed, W or Cmd/Ctrl+Enter)`} onclick={() => finish()}><CircularCheckProgress progress={reviewProgress} size={18} iconSize={13} /><span class="hidden sm:inline">Insert feedback</span></Button>
+				<Button size="md" class="feedback-progress {reviewScopeComplete ? 'review-complete' : ''} {celebrateReviewComplete ? 'review-progress-complete' : ''}" title={`Send feedback (${reviewProgress}% reviewed, W or Cmd/Ctrl+Enter)`} onclick={openCompletionDialog}>{#if hasFeedback}<X size={15} />{:else}<Check size={15} />{/if}<span class="hidden sm:inline">Send feedback</span></Button>
 			</div>
 			<Button size="icon-md" title="Toggle comments sidebar (Shift+B)" aria-label="Toggle comments sidebar" onclick={() => (rightOpen = !rightOpen)}>{#if rightOpen}<PanelRightClose size={15} />{:else}<PanelRightOpen size={15} />{/if}</Button>
 		</header>
@@ -1168,15 +1193,16 @@
 {/if}
 
 {#if completionDialog}
-	<div role="presentation" class="modal-backdrop fixed inset-0 z-40 grid place-items-center p-2" onclick={(event) => backdropClick(event, () => (completionDialog = false))}>
-		<div class="confetti-layer" aria-hidden="true">{#each confettiPieces as piece (piece.index)}<i style={piece.style}></i>{/each}</div>
+	<div role="presentation" class="modal-backdrop fixed inset-0 z-40 grid place-items-center p-2" onclick={(event) => backdropClick(event, closeCompletionDialog)}>
+		{#if showCompletionConfetti && reviewScopeComplete}<div class="confetti-layer" aria-hidden="true">{#each confettiPieces as piece (piece.index)}<i style={piece.style}></i>{/each}</div>{/if}
 		<div role="dialog" aria-modal="true" aria-labelledby="completion-dialog-title" class="relative z-10 grid w-[min(34rem,calc(100vw-2rem))] gap-1.5 border border-accent/50 bg-surface p-2.5 shadow-[0_16px_48px_var(--shadow)]">
 			<h2 id="completion-dialog-title" class="text-[1rem] font-semibold">Review complete</h2>
-			<p class="text-sm text-muted">Everything in this review scope is marked reviewed. Add optional closing notes before inserting feedback.</p>
+			<p class="text-sm text-muted">Everything in this review scope is marked reviewed. Add optional closing notes before sending feedback, or approve it as-is.</p>
 			<label class="grid gap-[0.1875rem] text-sm text-muted">Closing notes
 				<textarea bind:this={closingNotesTextarea} bind:value={closingNotes} rows="5" placeholder="Optional notes to append below comments…"></textarea>
 			</label>
-			<div class="flex justify-end gap-1 pt-0.5"><button type="button" onclick={() => (completionDialog = false)}>Keep reviewing</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" type="button" onclick={() => finish()}><Check size={15} />Insert feedback</button></div>
+			<label class="flex items-center gap-1 text-sm text-muted" title="Immediately submit the feedback to the agent instead of only placing it in the input editor."><input type="checkbox" bind:checked={sendFeedbackDirectly} /> Send directly to agent</label>
+			<div class="flex justify-end gap-1 pt-0.5"><button type="button" onclick={closeCompletionDialog}>Keep reviewing</button><button class={!hasFeedback ? 'border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90' : ''} title={approveTitle} type="button" disabled={hasFeedback} onclick={() => finish({ approve: true })}><Check size={15} />Approve</button><button class={hasFeedback ? 'border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90' : ''} title={rejectTitle} type="button" onclick={() => finish({ approve: false })}><X size={15} />Reject</button></div>
 		</div>
 	</div>
 {/if}
@@ -1201,9 +1227,9 @@
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Ctrl+Shift+A</kbd><dd class="text-sm text-muted">Toggle Auto-advance</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">B</kbd><dd class="text-sm text-muted">Toggle files sidebar</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Shift+B</kbd><dd class="text-sm text-muted">Toggle comments sidebar</dd></div>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">W</kbd><dd class="text-sm text-muted">Insert feedback</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">W</kbd><dd class="text-sm text-muted">Send feedback</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd/Ctrl+C</kbd><dd class="text-sm text-muted">Copy feedback</dd></div>
-				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd/Ctrl+Enter</kbd><dd class="text-sm text-muted">Insert feedback</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd/Ctrl+Enter</kbd><dd class="text-sm text-muted">Send feedback</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">?</kbd><dd class="text-sm text-muted">Show keyboard shortcuts</dd></div>
 				<dt class="mt-3 border-t border-border pt-1.5 text-xs font-semibold uppercase text-muted">Editing comment</dt>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Ctrl+S</kbd><dd class="text-sm text-muted">Save comment</dd></div>
