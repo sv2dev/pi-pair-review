@@ -4,7 +4,7 @@ import type { ReviewCommit, ReviewDiffMode, ReviewFileSummary, ReviewFinding, Re
 import { parseReviewHunks } from './diff.ts';
 
 type Listener = (snapshot: ReviewSessionSnapshot) => void;
-type FeedbackHandler = (feedback: string) => void;
+type FeedbackHandler = (feedback: string, options?: { sendDirectly?: boolean }) => void;
 type AgentReviewHandler = (input: { modelKey: string; thinkingLevel: ReviewThinkingLevel; suggestComments: boolean }) => void;
 
 const sessions = new Map<string, ReviewSessionSnapshot>();
@@ -163,10 +163,10 @@ export function removeReviewFinding(id: string, findingId: string): boolean {
 	return removed;
 }
 
-export function finishReview(id: string, feedback?: string): boolean {
+export function finishReview(id: string, feedback?: string, options?: { sendDirectly?: boolean }): boolean {
 	const handler = feedbackHandlers.get(id);
 	if (!handler) return false;
-	handler(feedback?.trim() ? feedback : buildSessionFeedback(sessions.get(id)));
+	handler(feedback?.trim() ? feedback : buildSessionFeedback(sessions.get(id)), options);
 	feedbackHandlers.delete(id);
 	agentReviewHandlers.delete(id);
 	return true;
