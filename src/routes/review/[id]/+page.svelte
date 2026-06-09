@@ -557,10 +557,18 @@
 		}
 	}
 
+	function triggerAgentReviewShortcut() {
+		if (session?.preReview.status === 'idle' && !session.preReview.startedAt && !session.preReview.model && agentModelKey) {
+			void runAgentReview();
+			return;
+		}
+		modelDialog = true;
+	}
+
 	async function runAgentReview() {
+		if (!agentModelKey || session?.preReview.status === 'running') return;
 		persistReviewSettings();
 		modelDialog = false;
-		if (!agentModelKey) return;
 		const previousSession = session;
 		if (session) session = { ...session, preReview: { ...session.preReview, status: 'running', error: undefined, findings: suggestComments ? session.preReview.findings : [] } };
 		try {
@@ -716,6 +724,11 @@
 			void finish({ approve: approveRequested });
 			return;
 		}
+		if (modelDialog && (event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+			event.preventDefault();
+			void runAgentReview();
+			return;
+		}
 		if (commentDraft && ((event.ctrlKey && event.key.toLowerCase() === 's') || (event.metaKey && event.key === 'Enter'))) {
 			event.preventDefault();
 			void saveComment();
@@ -740,6 +753,16 @@
 		if (event.key === 'W') {
 			event.preventDefault();
 			openCompletionDialog();
+			return;
+		}
+		if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key === 'R') {
+			event.preventDefault();
+			modelDialog = true;
+			return;
+		}
+		if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'r') {
+			event.preventDefault();
+			triggerAgentReviewShortcut();
 			return;
 		}
 		if (event.key === 'ArrowDown' && event.altKey) {
@@ -1087,7 +1110,7 @@
 						{#if hasAgentReview || session.preReview.status === 'running'}
 							<span class="inline-flex items-center gap-[0.1875rem] bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{#if session.preReview.status === 'running'}<LoaderCircle class="animate-spin" size={11} />{/if}{hasAgentReview ? 'done' : 'running'}</span>
 						{:else}
-							<button class="px-1 py-[0.0625rem] text-xs" title="Run AI review" disabled={!agentModelKey} onclick={runAgentReview}><Play size={13} />Run</button>
+							<button class="px-1 py-[0.0625rem] text-xs" title="Run AI review (R)" disabled={!agentModelKey} onclick={runAgentReview}><Play size={13} />Run</button>
 						{/if}
 					</div>
 					{#if aiOpen}
@@ -1139,7 +1162,7 @@
 						<span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{findings.length}</span>
 					</div>
 					{#if agentCommentsOpen}
-						{#if findings.length === 0}<p class="text-sm text-muted">No agent comments yet.</p>{:else}<div class="grid gap-1">{#each findings as finding (finding.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-1"><span class="{severityClass(finding)} px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase">{finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove finding" onclick={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><div class="rendered-markdown text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
+						{#if findings.length === 0}<p class="text-sm text-muted">No agent comments yet.</p>{:else}<div class="grid min-w-0 gap-1">{#each findings as finding (finding.id)}<div class="grid min-w-0 gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === finding.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex min-w-0 items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><span class="flex min-w-0 items-center gap-1"><span class="{severityClass(finding)} flex-none px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase">{finding.severity}</span><small class="min-w-0 truncate text-muted">{finding.file ?? 'Overall'}{finding.line ? `:${finding.line}` : ''}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove finding" onclick={() => removeFinding(finding)}><Trash2 size={14} /></button></div><button class="block min-w-0 max-w-full overflow-hidden justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectFinding(finding)}><div class="rendered-markdown min-w-0 max-w-full text-sm">{@html renderMarkdown(finding.title)}</div></button></div>{/each}</div>{/if}
 					{/if}
 				</section>
 				<section class="flex min-h-0 min-w-0 flex-1 flex-col gap-1 overflow-hidden border border-border bg-surface p-[0.3125rem]">
@@ -1148,7 +1171,7 @@
 						<div class="flex flex-none items-center gap-1"><button class="px-1 py-[0.0625rem] text-xs" title="Comment overall (O)" onclick={() => (commentDraft = { scope: 'global', body: '' })}><MessageSquarePlus size={13} />comment</button><span class="bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{userComments.length}</span></div>
 					</div>
 					{#if userCommentsOpen}
-						{#if userComments.length === 0}<p class="text-sm text-muted">Click line numbers, add file comments, or comment overall.</p>{:else}<div class="grid min-h-0 gap-1 overflow-y-auto pr-0.5">{#each userComments as comment (comment.id)}<div class="grid gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === comment.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><span class="flex min-w-0 items-center gap-1"><small class="min-w-0 truncate text-muted">{comment.scope === 'global' ? 'Overall' : comment.scope === 'file' ? comment.file : `${comment.file}:${comment.line}`}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-surface-hover hover:text-fg" title="Edit" aria-label="Edit comment" onclick={() => editComment(comment)}><Edit3 size={14} /></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove comment" onclick={() => removeComment(comment)}><Trash2 size={14} /></button></div><button class="block w-full justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><div class="rendered-markdown text-sm">{@html renderMarkdown(comment.body, 'No description available.', comment.attachments)}</div></button></div>{/each}</div>{/if}
+						{#if userComments.length === 0}<p class="text-sm text-muted">Click line numbers, add file comments, or comment overall.</p>{:else}<div class="grid min-h-0 min-w-0 gap-1 overflow-y-auto pr-0.5">{#each userComments as comment (comment.id)}<div class="grid min-w-0 gap-[0.1875rem] p-1 transition-colors {highlightedEntryId === comment.id ? 'bg-accent-soft ring-1 ring-accent' : 'bg-surface-2 hover:bg-surface-hover'}"><div class="flex min-w-0 items-center gap-[0.1875rem]"><button class="min-w-0 flex-1 justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><span class="flex min-w-0 items-center gap-1"><small class="min-w-0 truncate text-muted">{comment.scope === 'global' ? 'Overall' : comment.scope === 'file' ? comment.file : `${comment.file}:${comment.line}`}</small></span></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-surface-hover hover:text-fg" title="Edit" aria-label="Edit comment" onclick={() => editComment(comment)}><Edit3 size={14} /></button><button class="flex-none border-0 bg-transparent px-0.5 text-muted hover:bg-danger-soft hover:text-danger" title="Remove" aria-label="Remove comment" onclick={() => removeComment(comment)}><Trash2 size={14} /></button></div><button class="block min-w-0 max-w-full overflow-hidden justify-start border-0 bg-transparent p-0 text-left hover:bg-transparent" onclick={() => selectComment(comment)}><div class="rendered-markdown min-w-0 max-w-full text-sm">{@html renderMarkdown(comment.body, 'No description available.', comment.attachments)}</div></button></div>{/each}</div>{/if}
 					{/if}
 				</section>
 				<div class="mt-auto flex justify-end p-[0.3125rem]"><Button size="icon-md" class="text-muted hover:text-fg" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts" onclick={() => (shortcutsDialog = true)}><HelpCircle size={15} /></Button></div>
@@ -1177,7 +1200,7 @@
 			</label>
 			<label class="flex items-center gap-1 text-sm"><input type="checkbox" bind:checked={suggestComments} /> Suggest comments</label>
 			<label class="flex items-center gap-1 text-sm"><input type="checkbox" bind:checked={autorunEnabled} /> Autorun</label>
-			<div class="flex justify-end gap-1 pt-0.5"><button title="Close dialog (Esc)" type="button" onclick={() => { persistReviewSettings(); modelDialog = false; }}>Close</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Run AI review" type="button" disabled={!agentModelKey || session?.preReview.status === 'running'} onclick={runAgentReview}><Play size={15} />Run</button></div>
+			<div class="flex justify-end gap-1 pt-0.5"><button title="Close dialog (Esc)" type="button" onclick={() => { persistReviewSettings(); modelDialog = false; }}>Close</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Run AI review (Cmd/Ctrl+Enter)" type="button" disabled={!agentModelKey || session?.preReview.status === 'running'} onclick={runAgentReview}><Play size={15} />Run</button></div>
 		</div>
 	</div>
 {/if}
@@ -1221,6 +1244,8 @@
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">F</kbd><dd class="text-sm text-muted">Add file comment</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Opt+↓ / ↑</kbd><dd class="text-sm text-muted">Next / previous hunk</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">O</kbd><dd class="text-sm text-muted">Comment overall</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">R</kbd><dd class="text-sm text-muted">Run AI review / open AI review settings</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Shift+R</kbd><dd class="text-sm text-muted">Open AI review settings</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">S</kbd><dd class="text-sm text-muted">Show Overview</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">I</kbd><dd class="text-sm text-muted">Isolate current part</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">+ / −</kbd><dd class="text-sm text-muted">Next / previous part</dd></div>
@@ -1236,6 +1261,7 @@
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd+Enter</kbd><dd class="text-sm text-muted">Save comment</dd></div>
 				<dt class="mt-3 border-t border-border pt-1.5 text-xs font-semibold uppercase text-muted">Dialogs</dt>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Esc</kbd><dd class="text-sm text-muted">Close dialog</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd/Ctrl+Enter</kbd><dd class="text-sm text-muted">Run AI review in AI review dialog</dd></div>
 			</dl>
 			<div class="flex justify-end gap-1 pt-0.5"><button type="button" onclick={() => (shortcutsDialog = false)}>Close</button></div>
 		</div>

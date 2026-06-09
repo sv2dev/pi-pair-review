@@ -261,6 +261,8 @@ input[type='radio'] {
 .rendered-markdown,
 .markdown-body,
 .comment-md {
+	min-width: 0;
+	max-width: 100%;
 	line-height: 1.5;
 	overflow-wrap: anywhere;
 }
@@ -285,6 +287,16 @@ input[type='radio'] {
 :is(.rendered-markdown, .markdown-body, .comment-md) code {
 	background: var(--code-bg);
 	padding: 0.05rem 0.15rem;
+}
+:is(.rendered-markdown, .markdown-body, .comment-md) pre {
+	max-width: 100%;
+	overflow-x: auto;
+	white-space: pre-wrap;
+}
+:is(.rendered-markdown, .markdown-body, .comment-md) table {
+	display: block;
+	max-width: 100%;
+	overflow-x: auto;
 }
 :is(.rendered-markdown, .markdown-body, .comment-md) a {
 	color: var(--accent);
