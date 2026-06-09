@@ -557,10 +557,18 @@
 		}
 	}
 
+	function triggerAgentReviewShortcut() {
+		if (session?.preReview.status === 'idle' && !session.preReview.startedAt && !session.preReview.model && agentModelKey) {
+			void runAgentReview();
+			return;
+		}
+		modelDialog = true;
+	}
+
 	async function runAgentReview() {
+		if (!agentModelKey || session?.preReview.status === 'running') return;
 		persistReviewSettings();
 		modelDialog = false;
-		if (!agentModelKey) return;
 		const previousSession = session;
 		if (session) session = { ...session, preReview: { ...session.preReview, status: 'running', error: undefined, findings: suggestComments ? session.preReview.findings : [] } };
 		try {
@@ -716,6 +724,11 @@
 			void finish({ approve: approveRequested });
 			return;
 		}
+		if (modelDialog && (event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+			event.preventDefault();
+			void runAgentReview();
+			return;
+		}
 		if (commentDraft && ((event.ctrlKey && event.key.toLowerCase() === 's') || (event.metaKey && event.key === 'Enter'))) {
 			event.preventDefault();
 			void saveComment();
@@ -740,6 +753,11 @@
 		if (event.key === 'W') {
 			event.preventDefault();
 			openCompletionDialog();
+			return;
+		}
+		if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === 'r') {
+			event.preventDefault();
+			triggerAgentReviewShortcut();
 			return;
 		}
 		if (event.key === 'ArrowDown' && event.altKey) {
@@ -1087,7 +1105,7 @@
 						{#if hasAgentReview || session.preReview.status === 'running'}
 							<span class="inline-flex items-center gap-[0.1875rem] bg-code px-[0.1875rem] py-[0.0625rem] text-[0.66rem] font-semibold uppercase text-muted">{#if session.preReview.status === 'running'}<LoaderCircle class="animate-spin" size={11} />{/if}{hasAgentReview ? 'done' : 'running'}</span>
 						{:else}
-							<button class="px-1 py-[0.0625rem] text-xs" title="Run AI review" disabled={!agentModelKey} onclick={runAgentReview}><Play size={13} />Run</button>
+							<button class="px-1 py-[0.0625rem] text-xs" title="Run AI review (R)" disabled={!agentModelKey} onclick={runAgentReview}><Play size={13} />Run</button>
 						{/if}
 					</div>
 					{#if aiOpen}
@@ -1177,7 +1195,7 @@
 			</label>
 			<label class="flex items-center gap-1 text-sm"><input type="checkbox" bind:checked={suggestComments} /> Suggest comments</label>
 			<label class="flex items-center gap-1 text-sm"><input type="checkbox" bind:checked={autorunEnabled} /> Autorun</label>
-			<div class="flex justify-end gap-1 pt-0.5"><button title="Close dialog (Esc)" type="button" onclick={() => { persistReviewSettings(); modelDialog = false; }}>Close</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Run AI review" type="button" disabled={!agentModelKey || session?.preReview.status === 'running'} onclick={runAgentReview}><Play size={15} />Run</button></div>
+			<div class="flex justify-end gap-1 pt-0.5"><button title="Close dialog (Esc)" type="button" onclick={() => { persistReviewSettings(); modelDialog = false; }}>Close</button><button class="border-accent bg-accent text-accent-fg hover:bg-accent hover:opacity-90" title="Run AI review (Cmd/Ctrl+Enter)" type="button" disabled={!agentModelKey || session?.preReview.status === 'running'} onclick={runAgentReview}><Play size={15} />Run</button></div>
 		</div>
 	</div>
 {/if}
@@ -1221,6 +1239,7 @@
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">F</kbd><dd class="text-sm text-muted">Add file comment</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Opt+↓ / ↑</kbd><dd class="text-sm text-muted">Next / previous hunk</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">O</kbd><dd class="text-sm text-muted">Comment overall</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">R</kbd><dd class="text-sm text-muted">Run AI review / open AI review settings</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">S</kbd><dd class="text-sm text-muted">Show Overview</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">I</kbd><dd class="text-sm text-muted">Isolate current part</dd></div>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">+ / −</kbd><dd class="text-sm text-muted">Next / previous part</dd></div>
@@ -1236,6 +1255,7 @@
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd+Enter</kbd><dd class="text-sm text-muted">Save comment</dd></div>
 				<dt class="mt-3 border-t border-border pt-1.5 text-xs font-semibold uppercase text-muted">Dialogs</dt>
 				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Esc</kbd><dd class="text-sm text-muted">Close dialog</dd></div>
+				<div class="grid grid-cols-[8rem_minmax(0,1fr)] items-center gap-1.5"><kbd class="justify-self-start border border-border-strong bg-code px-[0.1875rem] py-[0.0625rem] font-mono text-xs font-semibold">Cmd/Ctrl+Enter</kbd><dd class="text-sm text-muted">Run AI review in AI review dialog</dd></div>
 			</dl>
 			<div class="flex justify-end gap-1 pt-0.5"><button type="button" onclick={() => (shortcutsDialog = false)}>Close</button></div>
 		</div>
