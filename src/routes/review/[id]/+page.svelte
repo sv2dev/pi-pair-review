@@ -141,6 +141,9 @@
 		: rightOpen ? 'lg:grid-cols-[minmax(0,1fr)_19rem]' : 'lg:grid-cols-[minmax(0,1fr)]');
 	let selectedAgentModel = $derived(session?.agentReview.models.find((model) => model.key === agentModelKey));
 	let selectedWorktree = $derived(worktrees.find((worktree) => worktree.path === worktreeCwd));
+	let projectName = $derived(session ? repositoryLabel(session.cwd) : 'Story Review');
+	let currentBranchName = $derived(selectedWorktree?.branch ?? (selectedWorktree?.head ? selectedWorktree.head.slice(0, 7) : undefined));
+	let tabTitle = $derived(currentBranchName ? `${projectName} · ${currentBranchName}` : projectName);
 	let preferredBranchBase = $derived(selectPreferredBranchBase(branchRefs, selectedWorktree?.branch));
 	let reviewSettingsJson = $derived(JSON.stringify({ modelKey: agentModelKey, thinkingLevel: agentThinkingLevel, suggestComments, strategy, sortOrder, cueEnabled, autorun: { ...(autorunSettings ?? { enabled: false, unconditional: false }), enabled: autorunEnabled }, isolatedPart, autoAdvance, sendFeedbackDirectly, diffStyle, wrap }));
 
@@ -1024,6 +1027,10 @@
 		if (event.target === event.currentTarget) close();
 	}
 </script>
+
+<svelte:head>
+	<title>{tabTitle}</title>
+</svelte:head>
 
 <svelte:window onkeydown={handleShortcut} />
 
